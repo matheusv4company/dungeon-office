@@ -1,6 +1,11 @@
 # Escritorio Virtual — app unico: Colyseus (multiplayer) + /token (voz) + cliente estatico.
 FROM node:22-slim
 
+# git: o Colyseus instala o uWebSockets.js a partir de um repositorio git.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Dependencias primeiro (melhor cache de camadas)
