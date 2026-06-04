@@ -53,6 +53,8 @@ export class OfficeScene extends Phaser.Scene {
   // voz
   private voice = new VoiceManager();
   private voiceBtn?: Phaser.GameObjects.Text;
+  private shareBtn?: Phaser.GameObjects.Text;
+  private lastSharing = false;
   private sessionId = "";
   private meetingBadge?: Phaser.GameObjects.Text;
   private roster?: Phaser.GameObjects.Text;
@@ -76,6 +78,8 @@ export class OfficeScene extends Phaser.Scene {
     this.leaving = false;
     this.reconnecting = false;
     this.voiceBtn = undefined;
+    this.shareBtn = undefined;
+    this.lastSharing = false;
     this.roster = undefined;
     this.localRing = undefined;
     this.meetingBadge = undefined;
@@ -273,6 +277,7 @@ export class OfficeScene extends Phaser.Scene {
     try {
       const room = await joinOffice({ name, charId: this.charIndex, x, y });
       this.setupVoiceButton();
+      this.setupShareButton();
       this.wireRoom(room, name, x, y);
       console.log("[net] conectado:", room.sessionId);
     } catch (e) {
@@ -390,30 +395,73 @@ export class OfficeScene extends Phaser.Scene {
     this.voiceBtn = btn;
     btn.on("pointerdown", async () => {
       if (busy) return;
-      if (!this.voice.connected) {
-        busy = true;
-        btn.setText("🎙️ conectando…").setBackgroundColor("#555");
-        try {
+      busy = true;
+      try {
+        if (!this.voice.connected) {
+          btn.setText("🎙️ conectando…").setBackgroundColor("#555");
           await this.voice.connect(this.sessionId, loadSelection().name || "Convidado");
-        } catch (e) {
-          console.warn("[voz] indisponível", e);
-          btn.setText("🎙️ voz indisponível").setBackgroundColor("#7a2a2a");
-          busy = false;
-          return;
         }
+        await this.voice.setMicEnabled(!this.voice.micEnabled);
+      } catch (e) {
+        console.warn("[voz] indisponível", e);
+        btn.setText("🎙️ voz indisponível").setBackgroundColor("#7a2a2a");
         busy = false;
-      } else {
-        await this.voice.setMuted(!this.voice.muted);
+        return;
       }
+      busy = false;
       this.updateVoiceBtn();
     });
+  }
+
+  private setupShareButton() {
+    if (this.shareBtn) return;
+    let busy = false;
+    const btn = this.add
+      .text(this.scale.width - 16, 52, "🖥️ Compartilhar tela", {
+        fontFamily: "monospace",
+        fontSize: "14px",
+        color: "#ffffff",
+        backgroundColor: "#33445a",
+        padding: { x: 9, y: 6 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH)
+      .setInteractive({ useHandCursor: true });
+    this.shareBtn = btn;
+    btn.on("pointerdown", async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        if (!this.voice.connected) {
+          btn.setText("🖥️ conectando…").setBackgroundColor("#555");
+          await this.voice.connect(this.sessionId, loadSelection().name || "Convidado");
+        }
+        if (!this.voice.sharing) await this.voice.startScreenShare();
+        else await this.voice.stopScreenShare();
+      } catch (e) {
+        console.warn("[share] erro", e);
+      }
+      busy = false;
+      this.lastSharing = this.voice.sharing;
+      this.updateShareBtn();
+    });
+  }
+
+  private updateShareBtn() {
+    if (!this.shareBtn) return;
+    if (this.voice.sharing) {
+      this.shareBtn.setText("🖥️ Compartilhando — parar").setBackgroundColor("#2a7a3a");
+    } else {
+      this.shareBtn.setText("🖥️ Compartilhar tela").setBackgroundColor("#33445a");
+    }
   }
 
   private updateVoiceBtn() {
     if (!this.voiceBtn) return;
     if (!this.voice.connected) {
       this.voiceBtn.setText("🎙️ Ativar voz").setBackgroundColor("#2a7a3a");
-    } else if (this.voice.muted) {
+    } else if (!this.voice.micEnabled) {
       this.voiceBtn.setText("🔇 Mudo — clique p/ falar").setBackgroundColor("#7a2a2a");
     } else {
       this.voiceBtn.setText("🎙️ Falando — clique p/ mutar").setBackgroundColor("#2a7a3a");
@@ -771,10 +819,22 @@ export class OfficeScene extends Phaser.Scene {
           const d = Math.hypot(p.x - self.x, p.y - self.y);
           return d <= VOICE_FULL ? 1 : d >= VOICE_MAX ? 0 : (VOICE_MAX - d) / (VOICE_MAX - VOICE_FULL);
         });
+        // tela compartilhada: visivel so pra quem esta na MESMA sala de reuniao
+        this.voice.applyShareVisibility((id) => {
+          const sp = state.players.get(id);
+          if (!sp) return false;
+          const sz = zoneAt(sp.x, sp.y);
+          return sz >= 0 && sz === myZone;
+        });
       }
     }
 
     if (this.voiceBtn) this.voiceBtn.setPosition(this.scale.width - 16, 16);
+    if (this.shareBtn) this.shareBtn.setPosition(this.scale.width - 16, 52);
+    if (this.voice.sharing !== this.lastSharing) {
+      this.lastSharing = this.voice.sharing;
+      this.updateShareBtn();
+    }
     if (this.room && this.reconnectBadge) this.showReconnecting(false);
   }
 }
