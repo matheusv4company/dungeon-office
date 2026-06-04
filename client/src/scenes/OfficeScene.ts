@@ -1144,19 +1144,36 @@ export class OfficeScene extends Phaser.Scene {
   private addUmbrella(c: number, r: number, color: number) {
     const x = c * T + T / 2;
     const y = r * T + T / 2;
-    const R = 24;
-    this.add.ellipse(x, y + 4, 2 * R, R * 0.9, 0x000000, 0.12).setDepth(y - 1);
+    const R = 26;
+    const oct = (rr: number): Array<[number, number]> => {
+      const pts: Array<[number, number]> = [];
+      for (let i = 0; i < 8; i++) {
+        const a = -Math.PI / 2 + (i * Math.PI) / 4;
+        pts.push([x + Math.cos(a) * rr, y + Math.sin(a) * rr]);
+      }
+      return pts;
+    };
+    this.add.ellipse(x, y + 5, 2 * R, R * 0.85, 0x000000, 0.12).setDepth(y - 1); // sombra
     const g = this.add.graphics().setDepth(y);
-    for (let i = 0; i < 8; i++) {
-      g.fillStyle(i % 2 ? color : 0xfff2f2, 1);
+    const rings = 5;
+    for (let k = rings; k >= 1; k--) {
+      g.fillStyle(k % 2 ? color : 0xffffff, 1); // aneis concentricos cor/branco
       g.beginPath();
-      g.slice(x, y, R, (i / 8) * Math.PI * 2, ((i + 1) / 8) * Math.PI * 2, false);
+      const pts = oct((R * k) / rings);
+      g.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
       g.closePath();
       g.fillPath();
     }
-    g.lineStyle(1, 0x000000, 0.14);
-    g.strokeCircle(x, y, R);
-    this.add.ellipse(x, y, 6, 6, 0x8a7a5a).setDepth(y + 0.1);
+    g.lineStyle(1, 0x000000, 0.15); // gomos
+    for (let i = 0; i < 8; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 4;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + Math.cos(a) * R, y + Math.sin(a) * R);
+      g.strokePath();
+    }
+    this.add.ellipse(x, y, 5, 5, 0x8a7a5a).setDepth(y + 0.1); // ponta central
   }
 
   private addBeachTowel(c: number, r: number, color: number) {
@@ -1225,6 +1242,15 @@ export class OfficeScene extends Phaser.Scene {
     this.addTorch(COLS - 1, cy + 12, FLAME_GREEN);
     this.addBrazier(11, ROWS - 3, FLAME_GREEN);
     this.addBrazier(19, ROWS - 3, FLAME_GREEN);
+
+    // culto sombrio: pentagramas no chao, cultistas encapuzados e ceifador
+    const cty = CRYPT_Y0 * T;
+    this.addPentagram(9 * T, cty + 7 * T, 44);
+    this.addCultist(6.5 * T, cty + 7 * T);
+    this.addCultist(11.5 * T, cty + 7 * T);
+    this.addPentagram(23 * T, cty + 13 * T, 38);
+    this.addCultist(20 * T, cty + 13 * T);
+    this.addReaper(24 * T, cty + 6 * T);
 
     this.addRoomLabel("💀 Cripta Amaldiçoada", 8 * T, (CRYPT_Y0 + 2) * T);
     // chega ACIMA da escada de descida (linha 34) pra nao reativar ao subir segurando ↑
@@ -1355,6 +1381,67 @@ export class OfficeScene extends Phaser.Scene {
       this.add.ellipse(x + dx + Math.cos(rad) * 8, y + dy + Math.sin(rad) * 8, 5, 5, bone).setDepth(d);
       this.add.ellipse(x + dx - Math.cos(rad) * 8, y + dy - Math.sin(rad) * 8, 5, 5, bone).setDepth(d);
     }
+  }
+
+  private addPentagram(x: number, y: number, R: number) {
+    this.add
+      .ellipse(x, y, R * 3, R * 3, 0x8a1f3a, 0.12)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(0.45);
+    const g = this.add.graphics().setDepth(0.5);
+    g.lineStyle(2, 0xb02a44, 0.9);
+    g.strokeCircle(x, y, R);
+    const pts: Array<[number, number]> = [];
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+      pts.push([x + Math.cos(a) * R, y + Math.sin(a) * R]);
+    }
+    const order = [0, 2, 4, 1, 3, 0];
+    g.beginPath();
+    g.moveTo(pts[order[0]][0], pts[order[0]][1]);
+    for (let i = 1; i < order.length; i++) g.lineTo(pts[order[i]][0], pts[order[i]][1]);
+    g.strokePath();
+  }
+
+  private addCultist(x: number, y: number) {
+    const d = y;
+    const robe = 0x17141f;
+    const trim = 0x3a2a4a;
+    this.add.ellipse(x, y + 20, 30, 16, robe).setDepth(d); // barra do manto
+    this.add.rectangle(x, y + 6, 26, 36, robe).setStrokeStyle(1, trim).setDepth(d);
+    this.add.ellipse(x, y - 6, 30, 16, robe).setDepth(d); // ombros
+    this.add.ellipse(x, y - 16, 22, 23, robe).setDepth(d + 0.1); // capuz
+    this.add.ellipse(x, y - 14, 11, 14, 0xcfc8b4).setDepth(d + 0.2); // caveira de passaro
+    this.add.ellipse(x - 3, y - 16, 2.6, 3.4, 0x12100a).setDepth(d + 0.3);
+    this.add.ellipse(x + 3, y - 16, 2.6, 3.4, 0x12100a).setDepth(d + 0.3);
+    this.add.triangle(x, y - 8, 0, 0, -2, 9, 2, 9, 0xb8b09a).setDepth(d + 0.3); // bico
+    this.add.rectangle(x - 8, y - 25, 2.6, 11, 0xcfc8b4).setAngle(-28).setDepth(d + 0.15); // chifre
+    this.add.rectangle(x + 8, y - 25, 2.6, 11, 0xcfc8b4).setAngle(28).setDepth(d + 0.15);
+    this.add.ellipse(x, y + 4, 10, 10, 0x000000, 0).setStrokeStyle(1, 0xb02a44).setDepth(d + 0.2); // pentagrama no peito
+    this.add.ellipse(x, y + 4, 3, 3, 0xb02a44).setDepth(d + 0.3);
+  }
+
+  private addReaper(x: number, y: number) {
+    const d = y;
+    const robe = 0x0e0c14;
+    this.add.ellipse(x, y + 24, 36, 18, robe).setDepth(d);
+    this.add.rectangle(x, y + 4, 32, 46, robe).setStrokeStyle(1, 0x2a2636).setDepth(d);
+    this.add.ellipse(x, y - 10, 32, 18, robe).setDepth(d); // ombros
+    this.add.ellipse(x, y - 24, 25, 27, robe).setDepth(d + 0.1); // capuz
+    this.add.ellipse(x, y - 22, 17, 21, 0x05040a).setDepth(d + 0.15); // vazio
+    this.add.ellipse(x, y - 22, 12, 14, 0xcfc8b4).setDepth(d + 0.2); // caveira
+    this.add.ellipse(x, y - 17, 8, 4, 0xcfc8b4).setDepth(d + 0.2); // mandibula
+    this.add.ellipse(x - 3, y - 23, 3, 4, 0x7a1f1f).setDepth(d + 0.3); // olhos
+    this.add.ellipse(x + 3, y - 23, 3, 4, 0x7a1f1f).setDepth(d + 0.3);
+    this.add
+      .ellipse(x, y - 23, 20, 20, 0xff2a2a, 0.13)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(d + 0.25);
+    this.add.rectangle(x + 24, y - 4, 4, 74, 0x4a3420).setAngle(7).setDepth(d + 0.1); // cabo
+    this.add
+      .triangle(x + 30, y - 40, 0, 0, 30, -6, 6, 16, 0xc2c7cf)
+      .setStrokeStyle(1, 0x6a6e76)
+      .setDepth(d + 0.2); // lamina
   }
 
   // ---------- andares: camadas, camera e escadas ----------
