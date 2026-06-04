@@ -1,0 +1,15 @@
+Assets de terceiros usados neste projeto
+=========================================
+
+Personagens (10) — Liberated Pixel Cup (LPC)
+- Camadas compostas a partir de jrconway3/Universal-LPC-spritesheet
+- Licenca: CC-BY-SA 3.0 / GPL 3.0
+- Artistas LPC: Stephen Challener (Redshrike), Johannes Sjolund (wulax),
+  e muitos outros colaboradores do projeto LPC.
+
+Cenario (dungeon) — Dungeon Crawl Stone Soup (DCSS)
+- Chao, paredes, portas, armas e escudos (decoracao)
+- Licenca: CC0 (dominio publico)
+
+(Historico: o personagem "Misa" e o tileset "Tuxemon" (CC BY-SA) foram usados
+ na Fase 1 para prototipar e nao fazem mais parte do jogo.)

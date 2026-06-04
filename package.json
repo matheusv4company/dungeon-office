@@ -1,0 +1,20 @@
+{
+  "name": "escritorio-virtual",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Escritorio virtual 2D top-down (estilo Tibia) com voz por proximidade para o time interno.",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c green,blue \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w server && npm run build -w client"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3",
+    "sharp": "^0.34.5"
+  }
+}

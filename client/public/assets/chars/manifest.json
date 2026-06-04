@@ -1,0 +1,52 @@
+[
+  {
+    "index": 0,
+    "id": "cavaleiro",
+    "name": "Cavaleiro"
+  },
+  {
+    "index": 1,
+    "id": "cav_dourado",
+    "name": "Cavaleiro Dourado"
+  },
+  {
+    "index": 2,
+    "id": "soldado",
+    "name": "Soldado"
+  },
+  {
+    "index": 3,
+    "id": "mago",
+    "name": "Mago"
+  },
+  {
+    "index": 4,
+    "id": "arqueiro",
+    "name": "Arqueiro"
+  },
+  {
+    "index": 5,
+    "id": "ladino",
+    "name": "Ladino"
+  },
+  {
+    "index": 6,
+    "id": "guerreiro",
+    "name": "Guerreiro"
+  },
+  {
+    "index": 7,
+    "id": "senhor_guerra",
+    "name": "Senhor de Guerra"
+  },
+  {
+    "index": 8,
+    "id": "clerigo",
+    "name": "Clérigo"
+  },
+  {
+    "index": 9,
+    "id": "elfo",
+    "name": "Elfo Sombrio"
+  }
+]
