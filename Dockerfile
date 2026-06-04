@@ -16,9 +16,11 @@ WORKDIR /app
 COPY package.json ./
 COPY client/package.json ./client/
 COPY server/package.json ./server/
-# --include=dev garante vite/typescript (build) mesmo com NODE_ENV=production;
-# --omit=optional pula o sharp (usado so no gerador de personagens offline).
-RUN npm install --include=dev --omit=optional
+# --include=dev garante vite/typescript mesmo com NODE_ENV=production.
+# NAO usar --omit=optional: o vite 8 (rolldown) precisa do binding nativo por
+# plataforma, que e dependencia OPCIONAL. O sharp (tambem opcional) instala
+# aqui normalmente — ou e ignorado se falhar, sem quebrar o build.
+RUN npm install --include=dev
 
 # Codigo + build (cliente -> client/dist ; servidor -> server/dist)
 COPY . .
