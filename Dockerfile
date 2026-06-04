@@ -7,7 +7,9 @@ WORKDIR /app
 COPY package.json ./
 COPY client/package.json ./client/
 COPY server/package.json ./server/
-RUN npm install
+# --include=dev garante vite/typescript (build) mesmo com NODE_ENV=production;
+# --omit=optional pula o sharp (usado so no gerador de personagens offline).
+RUN npm install --include=dev --omit=optional
 
 # Codigo + build (cliente -> client/dist ; servidor -> server/dist)
 COPY . .

@@ -14,7 +14,9 @@
     "build": "npm run build -w server && npm run build -w client"
   },
   "devDependencies": {
-    "concurrently": "^10.0.3",
+    "concurrently": "^10.0.3"
+  },
+  "optionalDependencies": {
     "sharp": "^0.34.5"
   }
 }
