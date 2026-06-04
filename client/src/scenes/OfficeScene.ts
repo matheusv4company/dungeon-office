@@ -1227,7 +1227,8 @@ export class OfficeScene extends Phaser.Scene {
     this.addBrazier(19, ROWS - 3, FLAME_GREEN);
 
     this.addRoomLabel("💀 Cripta Amaldiçoada", 8 * T, (CRYPT_Y0 + 2) * T);
-    this.addStaircase(16, CRYPT_Y0 + 2, true, "▲ Escritório", 16, 35); // sobe pro escritorio
+    // chega ACIMA da escada de descida (linha 34) pra nao reativar ao subir segurando ↑
+    this.addStaircase(16, CRYPT_Y0 + 2, true, "▲ Escritório", 16, 32);
   }
 
   private addSkull(c: number, r: number) {
