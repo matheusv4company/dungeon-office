@@ -9,6 +9,7 @@ import type {
 import { SERVER_HTTP_URL } from "./room";
 
 export type Vec = { x: number; y: number };
+export type MicDevice = { deviceId: string; label: string };
 
 type ShareEntry = {
   track: RemoteVideoTrack;
@@ -17,11 +18,13 @@ type ShareEntry = {
   visible: boolean;
 };
 
+const LS_MIC = "ev_micDeviceId";
+
 /**
  * Voz por proximidade + compartilhamento de tela (LiveKit, sala unica).
- * - Audio: volume por distancia/zona (setVolume por participante).
- * - Tela: painel flutuante (overlay), mostrado conforme a regra da cena.
- * - Conexao e microfone desacoplados: da pra compartilhar tela sem falar.
+ * - Audio: volume por distancia/zona; auto-mute fica a cargo da cena.
+ * - Tela: painel flutuante (overlay); inclui a propria tela de quem compartilha.
+ * - Microfone: device selecionavel (lembrado em localStorage).
  */
 export class VoiceManager {
   private room?: Room;
@@ -29,11 +32,18 @@ export class VoiceManager {
   private els = new Map<string, HTMLMediaElement>();
   private shares = new Map<string, ShareEntry>();
   private sharePanel?: HTMLDivElement;
+  private selfShare?: { card: HTMLDivElement; video: HTMLVideoElement };
+  private micDeviceId: string | undefined = (() => {
+    try {
+      return localStorage.getItem(LS_MIC) || undefined;
+    } catch {
+      return undefined;
+    }
+  })();
   connected = false;
   micEnabled = false;
   sharing = false;
 
-  /** Conecta na sala LiveKit (sem ligar o microfone). */
   async connect(identity: string, displayName: string): Promise<void> {
     if (this.connected) return;
     const resp = await fetch(
@@ -77,7 +87,10 @@ export class VoiceManager {
     });
 
     room.on(RoomEvent.LocalTrackUnpublished, (pub: LocalTrackPublication) => {
-      if (pub.source === Track.Source.ScreenShare) this.sharing = false;
+      if (pub.source === Track.Source.ScreenShare) {
+        this.sharing = false;
+        this.hideSelfShare();
+      }
     });
 
     await room.connect(data.url, data.token);
@@ -87,7 +100,44 @@ export class VoiceManager {
 
   async setMicEnabled(on: boolean): Promise<void> {
     this.micEnabled = on;
-    if (this.room) await this.room.localParticipant.setMicrophoneEnabled(on);
+    if (this.room) {
+      await this.room.localParticipant.setMicrophoneEnabled(
+        on,
+        on && this.micDeviceId ? { deviceId: this.micDeviceId } : undefined,
+      );
+    }
+  }
+
+  /** Lista os microfones disponiveis (rotulos so aparecem apos permissao). */
+  async listMics(): Promise<MicDevice[]> {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return devices
+        .filter((d) => d.kind === "audioinput")
+        .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Microfone ${i + 1}` }));
+    } catch {
+      return [];
+    }
+  }
+
+  getMicDeviceId(): string | undefined {
+    return this.micDeviceId;
+  }
+
+  async setMicDevice(deviceId: string): Promise<void> {
+    this.micDeviceId = deviceId;
+    try {
+      localStorage.setItem(LS_MIC, deviceId);
+    } catch {
+      /* ignore */
+    }
+    if (this.room) {
+      try {
+        await this.room.switchActiveDevice("audioinput", deviceId);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   async startScreenShare(): Promise<boolean> {
@@ -95,6 +145,7 @@ export class VoiceManager {
     try {
       await this.room.localParticipant.setScreenShareEnabled(true, { audio: false });
       this.sharing = this.room.localParticipant.isScreenShareEnabled;
+      if (this.sharing) this.showSelfShare();
       return this.sharing;
     } catch {
       this.sharing = false;
@@ -105,9 +156,9 @@ export class VoiceManager {
   async stopScreenShare(): Promise<void> {
     if (this.room) await this.room.localParticipant.setScreenShareEnabled(false);
     this.sharing = false;
+    this.hideSelfShare();
   }
 
-  /** Volume (0..1) por participante, calculado pela cena (proximidade/zona). */
   applyGains(gainFor: (identity: string) => number): void {
     if (!this.connected) return;
     this.tracks.forEach((track, id) => {
@@ -115,18 +166,15 @@ export class VoiceManager {
     });
   }
 
-  /** Mostra/esconde cada tela compartilhada conforme a regra da cena. */
   applyShareVisibility(shouldShow: (identity: string) => boolean): void {
-    let any = false;
     this.shares.forEach((s, id) => {
       const show = shouldShow(id);
       if (show !== s.visible) {
         s.visible = show;
         s.card.style.display = show ? "block" : "none";
       }
-      any = any || s.visible;
     });
-    if (this.sharePanel) this.sharePanel.style.display = any ? "flex" : "none";
+    this.updatePanelDisplay();
   }
 
   speakingIds(): Set<string> {
@@ -156,6 +204,7 @@ export class VoiceManager {
       s.card.remove();
     });
     this.shares.clear();
+    this.selfShare = undefined;
     this.sharePanel?.remove();
     this.sharePanel = undefined;
     this.connected = false;
@@ -175,6 +224,12 @@ export class VoiceManager {
       this.sharePanel = p;
     }
     return this.sharePanel;
+  }
+
+  private updatePanelDisplay(): void {
+    if (!this.sharePanel) return;
+    const any = !!this.selfShare || Array.from(this.shares.values()).some((s) => s.visible);
+    this.sharePanel.style.display = any ? "flex" : "none";
   }
 
   private addShare(id: string, name: string, track: RemoteVideoTrack): void {
@@ -222,9 +277,38 @@ export class VoiceManager {
     }
     s.card.remove();
     this.shares.delete(id);
-    if (this.sharePanel) {
-      const any = Array.from(this.shares.values()).some((x) => x.visible);
-      this.sharePanel.style.display = any ? "flex" : "none";
-    }
+    this.updatePanelDisplay();
+  }
+
+  // ---- self-view: quem compartilha ve a propria tela ----
+
+  private showSelfShare(): void {
+    const pub = this.room?.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+    const track = pub?.videoTrack;
+    if (!track) return;
+    this.hideSelfShare();
+    const panel = this.ensureSharePanel();
+    const card = document.createElement("div");
+    card.style.cssText =
+      "background:#15131d;border:2px solid #2a7a3a;border-radius:10px;padding:8px;" +
+      "margin-bottom:8px;box-shadow:0 6px 24px #000c;";
+    const header = document.createElement("div");
+    header.style.cssText = "font:13px monospace;color:#9fe6b0;margin-bottom:6px;";
+    header.textContent = "🖥️ Você está compartilhando";
+    const video = track.attach() as HTMLVideoElement;
+    video.muted = true;
+    video.style.cssText =
+      "display:block;width:440px;max-width:46vw;max-height:40vh;border-radius:6px;background:#000;";
+    card.append(header, video);
+    panel.insertBefore(card, panel.firstChild);
+    this.selfShare = { card, video };
+    this.updatePanelDisplay();
+  }
+
+  private hideSelfShare(): void {
+    if (!this.selfShare) return;
+    this.selfShare.card.remove();
+    this.selfShare = undefined;
+    this.updatePanelDisplay();
   }
 }

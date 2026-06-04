@@ -54,6 +54,8 @@ export class OfficeScene extends Phaser.Scene {
   private voice = new VoiceManager();
   private voiceBtn?: Phaser.GameObjects.Text;
   private shareBtn?: Phaser.GameObjects.Text;
+  private micBtn?: Phaser.GameObjects.Text;
+  private micMenu?: HTMLDivElement;
   private lastSharing = false;
   private voiceOn = false;
   private lastMic = false;
@@ -64,6 +66,12 @@ export class OfficeScene extends Phaser.Scene {
   private reconnectBadge?: Phaser.GameObjects.Text;
   private leaving = false;
   private reconnecting = false;
+
+  // camera/zoom — HUD fica numa camera propria pra NAO escalar com o zoom
+  private uiCam?: Phaser.Cameras.Scene2D.Camera;
+  private hudLayer?: Phaser.GameObjects.Layer;
+  private callToast?: HTMLDivElement;
+  private onResizeRef?: (g: Phaser.Structs.Size) => void;
 
   constructor() {
     super("office");
@@ -81,6 +89,13 @@ export class OfficeScene extends Phaser.Scene {
     this.reconnecting = false;
     this.voiceBtn = undefined;
     this.shareBtn = undefined;
+    this.micBtn = undefined;
+    this.micMenu?.remove();
+    this.micMenu = undefined;
+    this.callToast?.remove();
+    this.callToast = undefined;
+    this.uiCam = undefined;
+    this.hudLayer = undefined;
     this.lastSharing = false;
     this.voiceOn = false;
     this.lastMic = false;
@@ -247,8 +262,8 @@ export class OfficeScene extends Phaser.Scene {
       D: kb.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     };
 
-    this.add
-      .text(12, 12, "WASD / setas — andar", {
+    const instr = this.add
+      .text(12, 12, "WASD / setas — andar  ·  scroll — zoom  ·  clique no nome de alguém — chamar", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -262,6 +277,9 @@ export class OfficeScene extends Phaser.Scene {
     this.addRoomLabel("Recepção", entranceCol * T, (ROWS - 2.2) * T);
     this.addRoomLabel("Área de Trabalho", 18.5 * T, 11 * T);
 
+    // ---- HUD em camera propria + zoom no scroll ----
+    this.setupUiCameraAndZoom([instr]);
+
     // ---- multiplayer ----
     void this.connectMultiplayer(sel.name || "Convidado", spawnX, spawnY);
   }
@@ -272,6 +290,14 @@ export class OfficeScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.leaving = true;
       this.voice.disconnect();
+      this.micMenu?.remove();
+      this.micMenu = undefined;
+      this.callToast?.remove();
+      this.callToast = undefined;
+      if (this.onResizeRef) {
+        this.scale.off(Phaser.Scale.Events.RESIZE, this.onResizeRef);
+        this.onResizeRef = undefined;
+      }
       try {
         this.room?.leave();
       } catch {
@@ -282,6 +308,7 @@ export class OfficeScene extends Phaser.Scene {
       const room = await joinOffice({ name, charId: this.charIndex, x, y });
       this.setupVoiceButton();
       this.setupShareButton();
+      this.setupMicButton();
       this.wireRoom(room, name, x, y);
       console.log("[net] conectado:", room.sessionId);
     } catch (e) {
@@ -306,6 +333,10 @@ export class OfficeScene extends Phaser.Scene {
     room.onLeave(() => {
       if (this.leaving || this.room !== room) return;
       this.handleDisconnect(name, x, y);
+    });
+    room.onMessage("called", (m: { from: string; name: string; x: number; y: number }) => {
+      if (this.room !== room) return;
+      this.onCalled(m);
     });
     this.refreshRoster();
     this.showReconnecting(false);
@@ -368,6 +399,13 @@ export class OfficeScene extends Phaser.Scene {
       .setStrokeStyle(3, 0x3aff6a)
       .setVisible(false)
       .setDepth(player.y - 1);
+    // clicar no nome = chamar essa pessoa
+    label.setInteractive({ useHandCursor: true });
+    label.on("pointerover", () => label.setColor("#ffd34d"));
+    label.on("pointerout", () => label.setColor("#ffe9b0"));
+    label.on("pointerdown", () => this.callPlayer(sessionId));
+    // remotos sao mundo: a camera do HUD nao deve desenha-los
+    this.uiCam?.ignore([sprite, label, ring]);
     this.remotes.set(sessionId, { sprite, label, ring });
   }
 
@@ -397,6 +435,7 @@ export class OfficeScene extends Phaser.Scene {
       .setDepth(UI_DEPTH)
       .setInteractive({ useHandCursor: true });
     this.voiceBtn = btn;
+    this.hudLayer?.add(btn);
     btn.on("pointerdown", async () => {
       if (busy) return;
       busy = true;
@@ -435,6 +474,7 @@ export class OfficeScene extends Phaser.Scene {
       .setDepth(UI_DEPTH)
       .setInteractive({ useHandCursor: true });
     this.shareBtn = btn;
+    this.hudLayer?.add(btn);
     btn.on("pointerdown", async () => {
       if (busy) return;
       busy = true;
@@ -487,6 +527,7 @@ export class OfficeScene extends Phaser.Scene {
         .setOrigin(0.5, 0)
         .setScrollFactor(0)
         .setDepth(UI_DEPTH);
+      this.hudLayer?.add(this.meetingBadge);
     } else if (!inMeeting && this.meetingBadge) {
       this.meetingBadge.destroy();
       this.meetingBadge = undefined;
@@ -518,6 +559,7 @@ export class OfficeScene extends Phaser.Scene {
         })
         .setScrollFactor(0)
         .setDepth(UI_DEPTH);
+      this.hudLayer?.add(this.roster);
     } else {
       this.roster.setText(txt);
     }
@@ -536,12 +578,215 @@ export class OfficeScene extends Phaser.Scene {
         .setOrigin(0.5, 1)
         .setScrollFactor(0)
         .setDepth(UI_DEPTH);
+      this.hudLayer?.add(this.reconnectBadge);
     } else if (!on && this.reconnectBadge) {
       this.reconnectBadge.destroy();
       this.reconnectBadge = undefined;
     }
     if (this.reconnectBadge) {
       this.reconnectBadge.setPosition(this.scale.width / 2, this.scale.height - 30);
+    }
+  }
+
+  // ---------- camera de HUD + zoom ----------
+
+  /**
+   * O mundo fica na camera principal (com zoom no scroll). O HUD vai numa
+   * camera propria (uiCam), que nunca aplica zoom — assim os botoes/labels
+   * fixos nao incham nem encolhem. Os nomes flutuantes seguem o mundo.
+   */
+  private setupUiCameraAndZoom(initialHud: Phaser.GameObjects.GameObject[]) {
+    const layer = this.add.layer().setDepth(UI_DEPTH);
+    initialHud.forEach((o) => layer.add(o));
+    this.hudLayer = layer;
+
+    const ui = this.cameras.add(0, 0, this.scale.width, this.scale.height);
+    this.uiCam = ui;
+    this.cameras.main.ignore(layer); // principal nao desenha o HUD
+    const layerObj = layer as unknown as Phaser.GameObjects.GameObject;
+    const world = this.children.list.filter((o) => o !== layerObj);
+    ui.ignore(world); // HUD nao desenha o mundo
+
+    this.input.on(
+      Phaser.Input.Events.POINTER_WHEEL,
+      (_p: Phaser.Input.Pointer, _o: Phaser.GameObjects.GameObject[], _dx: number, dy: number) => {
+        const cam = this.cameras.main;
+        const next = dy > 0 ? cam.zoom * 0.9 : cam.zoom / 0.9;
+        cam.setZoom(Phaser.Math.Clamp(next, 0.6, 2.2));
+      },
+    );
+
+    this.onResizeRef = (g: Phaser.Structs.Size) => ui.setSize(g.width, g.height);
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.onResizeRef);
+  }
+
+  // ---------- selecao de microfone ----------
+
+  private setupMicButton() {
+    if (this.micBtn) return;
+    const btn = this.add
+      .text(this.scale.width - 16, 88, "⚙️ Microfone", {
+        fontFamily: "monospace",
+        fontSize: "14px",
+        color: "#ffffff",
+        backgroundColor: "#444",
+        padding: { x: 9, y: 6 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH)
+      .setInteractive({ useHandCursor: true });
+    this.micBtn = btn;
+    this.hudLayer?.add(btn);
+    btn.on("pointerdown", () => void this.toggleMicMenu());
+  }
+
+  private async toggleMicMenu() {
+    if (this.micMenu) {
+      this.micMenu.remove();
+      this.micMenu = undefined;
+      return;
+    }
+    const mics = await this.voice.listMics();
+    if (this.micMenu) return; // corrida: outro clique ja abriu
+    const menu = document.createElement("div");
+    menu.style.cssText =
+      "position:fixed;top:124px;right:16px;z-index:9999;background:#15131d;" +
+      "border:2px solid #5a4a2a;border-radius:10px;padding:8px;min-width:240px;" +
+      "max-width:80vw;font:13px monospace;color:#f0e6c8;box-shadow:0 6px 24px #000c;";
+    const title = document.createElement("div");
+    title.textContent = "🎙️ Escolha o microfone";
+    title.style.cssText = "margin-bottom:6px;color:#9fe6b0;";
+    menu.appendChild(title);
+    const current = this.voice.getMicDeviceId();
+    if (!mics.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "Ative a voz para liberar a lista de microfones.";
+      empty.style.cssText = "opacity:.7;padding:4px;";
+      menu.appendChild(empty);
+    }
+    for (const m of mics) {
+      const sel = m.deviceId === current || (!current && m.deviceId === "default");
+      const row = document.createElement("div");
+      row.textContent = (sel ? "● " : "○ ") + m.label;
+      row.style.cssText =
+        "padding:6px 8px;border-radius:6px;cursor:pointer;white-space:nowrap;" +
+        "overflow:hidden;text-overflow:ellipsis;" +
+        (sel ? "background:#2a7a3a;" : "");
+      row.onmouseenter = () => {
+        if (!sel) row.style.background = "#2a2636";
+      };
+      row.onmouseleave = () => {
+        if (!sel) row.style.background = "";
+      };
+      row.onclick = () => {
+        void this.voice.setMicDevice(m.deviceId);
+        this.micMenu?.remove();
+        this.micMenu = undefined;
+        const short = m.label.length > 16 ? m.label.slice(0, 16) + "…" : m.label;
+        this.micBtn?.setText("⚙️ " + short);
+      };
+      menu.appendChild(row);
+    }
+    document.body.appendChild(menu);
+    this.micMenu = menu;
+  }
+
+  // ---------- chamar alguem ----------
+
+  private callPlayer(sid: string) {
+    if (!this.room || sid === this.sessionId) return;
+    this.room.send("call", { to: sid });
+    this.showToast("📣 Chamando…", "#33445a", 1400);
+  }
+
+  private onCalled(m: { name: string; x: number; y: number }) {
+    this.playBeep();
+    this.callToast?.remove();
+    const box = document.createElement("div");
+    box.style.cssText =
+      "position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:10000;" +
+      "background:#15131d;border:2px solid #caa44a;border-radius:12px;padding:12px 16px;" +
+      "font:14px monospace;color:#f0e6c8;box-shadow:0 8px 30px #000d;text-align:center;";
+    const msg = document.createElement("div");
+    msg.textContent = `📣 ${m.name} está te chamando!`;
+    msg.style.cssText = "margin-bottom:10px;";
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:8px;justify-content:center;";
+    const go = document.createElement("button");
+    go.textContent = "🏃 Ir até";
+    go.style.cssText =
+      "font:14px monospace;cursor:pointer;background:#2a7a3a;color:#fff;border:none;" +
+      "border-radius:8px;padding:7px 14px;";
+    const dismiss = document.createElement("button");
+    dismiss.textContent = "Dispensar";
+    dismiss.style.cssText =
+      "font:14px monospace;cursor:pointer;background:#3a3340;color:#ddd;border:none;" +
+      "border-radius:8px;padding:7px 14px;";
+    const close = () => {
+      box.remove();
+      if (this.callToast === box) this.callToast = undefined;
+    };
+    go.onclick = () => {
+      this.teleportNear(m.x, m.y);
+      close();
+    };
+    dismiss.onclick = close;
+    actions.append(go, dismiss);
+    box.append(msg, actions);
+    document.body.appendChild(box);
+    this.callToast = box;
+    this.time.delayedCall(20000, close);
+  }
+
+  private teleportNear(x: number, y: number) {
+    const margin = T;
+    const tx = Phaser.Math.Clamp(x + 44, margin, COLS * T - margin);
+    const ty = Phaser.Math.Clamp(y, margin, ROWS * T - margin);
+    this.player.setPosition(tx, ty);
+    this.nameLabel.setPosition(tx, ty - 30);
+    this.cameras.main.centerOn(tx, ty);
+    this.room?.send("move", {
+      x: Math.round(tx),
+      y: Math.round(ty),
+      dir: this.lastDir,
+      moving: false,
+    });
+  }
+
+  private showToast(text: string, bg: string, ms: number) {
+    const t = document.createElement("div");
+    t.textContent = text;
+    t.style.cssText =
+      "position:fixed;left:50%;bottom:84px;transform:translateX(-50%);z-index:9999;" +
+      `background:${bg};color:#fff;font:14px monospace;padding:8px 14px;border-radius:8px;` +
+      "box-shadow:0 6px 24px #000a;pointer-events:none;";
+    document.body.appendChild(t);
+    this.time.delayedCall(ms, () => t.remove());
+  }
+
+  private playBeep() {
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      const t0 = ctx.currentTime;
+      osc.frequency.setValueAtTime(880, t0);
+      osc.frequency.setValueAtTime(660, t0 + 0.12);
+      gain.gain.setValueAtTime(0.001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.25, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
+      osc.start(t0);
+      osc.stop(t0 + 0.42);
+      osc.onended = () => void ctx.close();
+    } catch {
+      /* sem audio disponivel */
     }
   }
 
@@ -858,6 +1103,7 @@ export class OfficeScene extends Phaser.Scene {
 
     if (this.voiceBtn) this.voiceBtn.setPosition(this.scale.width - 16, 16);
     if (this.shareBtn) this.shareBtn.setPosition(this.scale.width - 16, 52);
+    if (this.micBtn) this.micBtn.setPosition(this.scale.width - 16, 88);
     if (this.voice.sharing !== this.lastSharing) {
       this.lastSharing = this.voice.sharing;
       this.updateShareBtn();

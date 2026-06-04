@@ -4,6 +4,7 @@ import { Player } from "../schema/Player";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
+type CallMsg = { to?: string };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -21,6 +22,22 @@ export class OfficeRoom extends Room<OfficeState> {
       if (typeof msg.y === "number") p.y = msg.y;
       if (typeof msg.dir === "number") p.dir = clamp(msg.dir | 0, 0, 3);
       p.moving = !!msg.moving;
+    });
+
+    // "Chamar": avisa o alvo e manda a posicao autoritativa de quem chamou,
+    // pra ele poder usar o "Ir ate" e se teletransportar ao lado.
+    this.onMessage("call", (client, msg: CallMsg) => {
+      const to = String(msg?.to ?? "");
+      if (!to || to === client.sessionId) return;
+      const caller = this.state.players.get(client.sessionId);
+      const target = this.clients.find((c) => c.sessionId === to);
+      if (!caller || !target) return;
+      target.send("called", {
+        from: client.sessionId,
+        name: caller.name,
+        x: caller.x,
+        y: caller.y,
+      });
     });
 
     console.log("[OfficeRoom] sala criada");
