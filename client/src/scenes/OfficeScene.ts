@@ -18,8 +18,6 @@ const DIV1 = OY; // divisoria praia/escritorio
 const DIV2 = OY + OFFICE_ROWS - 1; // divisoria escritorio/cripta
 const CRYPT_Y0 = OY + OFFICE_ROWS; // 1a linha da cripta
 const ROWS = CRYPT_Y0 + CRYPT_ROWS; // total de linhas
-const PASS_C0 = 14; // passagens entre andares: colunas abertas
-const PASS_C1 = 16;
 const W = COLS * T; // largura do mapa (px)
 const H = ROWS * T; // altura do mapa (px)
 
@@ -44,6 +42,13 @@ function zoneAt(x: number, y: number): number {
     if (x >= z.x1 && x <= z.x2 && y >= z.y1 && y <= z.y2) return i;
   }
   return -1;
+}
+
+// qual andar um Y representa (0=praia, 1=escritorio, 2=cripta)
+function floorOfY(y: number): number {
+  if (y < OY * T) return 0;
+  if (y < CRYPT_Y0 * T) return 1;
+  return 2;
 }
 
 type Rect = { c: number; r: number; w: number; h: number };
@@ -91,6 +96,13 @@ export class OfficeScene extends Phaser.Scene {
   private callToast?: HTMLDivElement;
   private onResizeRef?: (g: Phaser.Structs.Size) => void;
 
+  // andares (0=praia, 1=escritorio, 2=cripta) — so o atual fica visivel
+  private floorLayer: Phaser.GameObjects.Layer[] = [];
+  private currentFloor = 1;
+  private stairs: Array<{ x1: number; y1: number; x2: number; y2: number; tx: number; ty: number }> = [];
+  private stairLatch = false;
+  private floorCdUntil = 0;
+
   constructor() {
     super("office");
   }
@@ -119,75 +131,75 @@ export class OfficeScene extends Phaser.Scene {
     this.localRing = undefined;
     this.meetingBadge = undefined;
     this.reconnectBadge = undefined;
+    this.floorLayer = [];
+    this.currentFloor = 1;
+    this.stairs = [];
+    this.stairLatch = false;
+    this.floorCdUntil = 0;
 
-    // ---- grade de colisao (3 andares empilhados) ----
+    // ---- grade de colisao (andares isolados; divisorias SEM passagem) ----
     const solid: boolean[][] = Array.from({ length: ROWS }, () =>
       Array<boolean>(COLS).fill(false),
     );
     const set = (c: number, r: number, v = true) => {
       if (r >= 0 && r < ROWS && c >= 0 && c < COLS) solid[r][c] = v;
     };
-    // bordas externas continuas + divisorias entre andares
     for (let c = 0; c < COLS; c++) {
       set(c, 0);
       set(c, ROWS - 1);
-      set(c, DIV1);
-      set(c, DIV2);
+      set(c, DIV1); // divisoria praia/escritorio (parede cheia)
+      set(c, DIV2); // divisoria escritorio/cripta (parede cheia)
     }
     for (let r = 0; r < ROWS; r++) {
       set(0, r);
       set(COLS - 1, r);
     }
-    // passagens (escadas) nas divisorias
-    for (let c = PASS_C0; c <= PASS_C1; c++) {
-      set(c, DIV1, false);
-      set(c, DIV2, false);
-    }
-    // paredes internas do escritorio (sala de reuniao), deslocadas pelo offset
+    // paredes internas do escritorio (sala de reuniao)
     for (let r = 1; r <= 7; r++) set(9, OY + r);
     for (let c = 1; c <= 9; c++) set(c, OY + 7);
     set(4, OY + 7, false);
 
-    // ---- chao por andar ----
-    const beachH = OY * T;
-    const officeY = OY * T;
-    const officeH = OFFICE_ROWS * T;
-    const cryptY = CRYPT_Y0 * T;
-    const cryptH = (ROWS - CRYPT_Y0) * T;
-    this.add.rectangle(0, 0, W, beachH, 0xe7d29a).setOrigin(0).setDepth(0); // areia
-    this.add.tileSprite(0, officeY, W, officeH, "floor").setOrigin(0).setDepth(0); // pedra
-    this.add.rectangle(0, cryptY, W, cryptH, 0x0b0913).setOrigin(0).setDepth(0); // cripta
-    this.cameras.main.setBackgroundColor("#07060d");
+    // ---- camadas por andar (ligam/desligam inteiras) ----
+    this.floorLayer = [this.add.layer(), this.add.layer(), this.add.layer()];
 
-    // ---- paredes (tom por andar) ----
+    // ---- paredes: fisica unica (sempre colide) + visual em cada andar ----
     const walls = this.physics.add.staticGroup();
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         if (!solid[r][c]) continue;
         const key = (r * 7 + c) % 4 === 0 ? "wall2" : "wall";
         const w = walls.create(c * T + T / 2, r * T + T / 2, key) as Phaser.Physics.Arcade.Sprite;
-        if (r < OY) w.setTint(0xcdb98a); // praia: arenito claro
-        else if (r >= CRYPT_Y0) w.setTint(0x4a4660); // cripta: pedra escura
         w.setDepth(1);
+        const fr = r < OY ? 0 : r <= DIV2 ? 1 : 2;
+        if (fr === 0) w.setTint(0xcdb98a);
+        else if (fr === 2) w.setTint(0x4a4660);
+        this.floorLayer[fr].add(w);
       }
     }
+    // copias visuais das divisorias, pra aparecerem tambem do andar vizinho
+    this.addDividerCopy(solid, DIV1, 0, 0xcdb98a); // teto da praia
+    this.addDividerCopy(solid, DIV2, 2, 0x4a4660); // teto da cripta
 
-    // ---- decoracao de cada andar ----
+    // ---- fundo + decoracao de cada andar (capturado na sua camada) ----
     this.makeFlameTexture();
-    this.buildBeach();
-    this.buildOfficeDecor(OY);
-    this.buildCrypt();
-
-    // ---- porta da sala de reuniao + placas das escadas ----
-    this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
-    const passX = ((PASS_C0 + PASS_C1 + 1) / 2) * T;
-    this.addStairLabel(passX, DIV1 * T + T / 2, "☀️ Praia ↑");
-    this.addStairLabel(passX, DIV2 * T + T / 2, "Cripta ↓ 💀");
+    this.buildFloorInto(0, () => {
+      this.add.rectangle(0, 0, W, OY * T, 0xe7d29a).setOrigin(0).setDepth(0);
+      this.buildBeach();
+    });
+    this.buildFloorInto(1, () => {
+      this.add.tileSprite(0, OY * T, W, OFFICE_ROWS * T, "floor").setOrigin(0).setDepth(0);
+      this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
+      this.buildOfficeDecor(OY);
+    });
+    this.buildFloorInto(2, () => {
+      this.add.rectangle(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T, 0x0b0913).setOrigin(0).setDepth(0);
+      this.buildCrypt();
+    });
 
     // ---- player ----
     ensureCharAnims(this, this.charIndex);
     const spawnX = 16 * T + T / 2;
-    const spawnY = (OY + OFFICE_ROWS - 5) * T + T / 2;
+    const spawnY = (OY + 13) * T + T / 2;
     this.player = this.physics.add
       .sprite(spawnX, spawnY, charKey(this.charIndex), FRAME.downIdle)
       .setDepth(spawnY);
@@ -215,8 +227,8 @@ export class OfficeScene extends Phaser.Scene {
     // ---- camera + input + HUD ----
     const cam = this.cameras.main;
     cam.startFollow(this.player);
-    cam.setBounds(0, 0, W, H);
     this.physics.world.setBounds(0, 0, W, H);
+    this.applyFloor(this.currentFloor); // mostra so o andar atual + trava a camera nele
 
     const kb = this.input.keyboard!;
     this.cursors = kb.createCursorKeys();
@@ -237,12 +249,6 @@ export class OfficeScene extends Phaser.Scene {
       })
       .setScrollFactor(0)
       .setDepth(UI_DEPTH);
-
-    this.addRoomLabel("☀️ Praia ensolarada", 15 * T, 8 * T);
-    this.addRoomLabel("Sala de Reunião", 4.7 * T, (5.5 + OY) * T);
-    this.addRoomLabel("Recepção", 16 * T, (OY + OFFICE_ROWS - 2.5) * T);
-    this.addRoomLabel("Área de Trabalho", 18.5 * T, (11 + OY) * T);
-    this.addRoomLabel("💀 Cripta Amaldiçoada", 15 * T, (CRYPT_Y0 + 2) * T);
 
     // ---- HUD em camera propria + zoom no scroll ----
     this.setupUiCameraAndZoom([instr]);
@@ -1017,6 +1023,11 @@ export class OfficeScene extends Phaser.Scene {
     this.addTorch(COLS - 1, oy + 16);
     this.addTorch(9, oy + 3);
     this.addTorch(9, oy + 6);
+
+    this.addRoomLabel("Sala de Reunião", 4.7 * T, (5.5 + oy) * T);
+    this.addRoomLabel("Área de Trabalho", 18.5 * T, (11 + oy) * T);
+    this.addStaircase(16, oy + 2, true, "▲ Praia", 16, 13); // sobe pra praia
+    this.addStaircase(16, oy + 17, false, "▼ Cripta", 16, 42); // desce pra cripta
   }
 
   // ---------- andar: praia ensolarada (topo) ----------
@@ -1072,6 +1083,9 @@ export class OfficeScene extends Phaser.Scene {
 
     // luz quente do dia
     this.add.rectangle(0, 0, W, OY * T, 0xfff0bf, 0.05).setOrigin(0).setDepth(0.95);
+
+    this.addRoomLabel("☀️ Praia ensolarada", 15 * T, 8 * T);
+    this.addStaircase(16, 14, false, "▼ Escritório", 16, 20); // desce pro escritorio
   }
 
   private addSun(x: number, y: number) {
@@ -1211,6 +1225,9 @@ export class OfficeScene extends Phaser.Scene {
     this.addTorch(COLS - 1, cy + 12, FLAME_GREEN);
     this.addBrazier(11, ROWS - 3, FLAME_GREEN);
     this.addBrazier(19, ROWS - 3, FLAME_GREEN);
+
+    this.addRoomLabel("💀 Cripta Amaldiçoada", 8 * T, (CRYPT_Y0 + 2) * T);
+    this.addStaircase(16, CRYPT_Y0 + 2, true, "▲ Escritório", 16, 35); // sobe pro escritorio
   }
 
   private addSkull(c: number, r: number) {
@@ -1339,17 +1356,110 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  private addStairLabel(x: number, y: number, text: string) {
+  // ---------- andares: camadas, camera e escadas ----------
+
+  /** Executa fn e joga tudo que ela criar na camada do andar f. */
+  private buildFloorInto(f: number, fn: () => void) {
+    const before = this.children.list.length;
+    fn();
+    this.floorLayer[f].add(this.children.list.slice(before));
+  }
+
+  /** Copia visual de uma divisoria pra ela aparecer tambem do andar vizinho. */
+  private addDividerCopy(solid: boolean[][], row: number, floor: number, tint: number) {
+    for (let c = 0; c < COLS; c++) {
+      if (!solid[row][c]) continue;
+      const key = (row * 7 + c) % 4 === 0 ? "wall2" : "wall";
+      const img = this.add.image(c * T + T / 2, row * T + T / 2, key).setTint(tint).setDepth(1);
+      this.floorLayer[floor].add(img);
+    }
+  }
+
+  /** Mostra so o andar f e trava a camera (com cor de fundo) nele. */
+  private applyFloor(f: number) {
+    for (let i = 0; i < this.floorLayer.length; i++) this.floorLayer[i].setVisible(i === f);
+    const cam = this.cameras.main;
+    if (f === 0) {
+      cam.setBounds(0, 0, W, OY * T);
+      cam.setBackgroundColor("#2f7fae");
+    } else if (f === 1) {
+      cam.setBounds(0, OY * T, W, OFFICE_ROWS * T);
+      cam.setBackgroundColor("#07060d");
+    } else {
+      cam.setBounds(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T);
+      cam.setBackgroundColor("#050409");
+    }
+  }
+
+  private useStair(tx: number, ty: number) {
+    this.player.setPosition(tx, ty);
+    (this.player.body as Phaser.Physics.Arcade.Body).reset(tx, ty);
+    this.floorCdUntil = this.time.now + 600;
+    const f = floorOfY(ty);
+    this.currentFloor = f;
+    this.applyFloor(f);
+    this.cameras.main.centerOn(tx, ty);
+    this.nameLabel.setPosition(tx, ty - 30);
+    this.room?.send("move", {
+      x: Math.round(tx),
+      y: Math.round(ty),
+      dir: this.lastDir,
+      moving: false,
+    });
+  }
+
+  private checkStairs() {
+    if (!this.stairs.length) return;
+    const px = this.player.x;
+    const py = this.player.y;
+    const now = this.time.now;
+    let on = false;
+    for (const s of this.stairs) {
+      if (px >= s.x1 && px <= s.x2 && py >= s.y1 && py <= s.y2) {
+        on = true;
+        if (!this.stairLatch && now > this.floorCdUntil) {
+          this.stairLatch = true;
+          this.useStair(s.tx, s.ty);
+        }
+        break;
+      }
+    }
+    if (!on) this.stairLatch = false;
+  }
+
+  /** Desenha uma escada e registra a zona que leva ao andar vizinho. */
+  private addStaircase(col: number, row: number, up: boolean, label: string, tcol: number, trow: number) {
+    const x = col * T + T / 2;
+    const y = row * T + T / 2;
+    const base = up ? 0x9a8a6a : 0x3a3550;
+    const edge = up ? 0x6a5a3a : 0x1f1b2c;
+    this.add.rectangle(x, y, T + 10, T + 14, base).setStrokeStyle(2, edge).setDepth(y - 2);
+    for (let i = 0; i < 4; i++) {
+      const sy = up ? y + 9 - i * 6 : y - 9 + i * 6;
+      this.add.rectangle(x, sy, T - 6 - i * 4, 5, i % 2 ? edge : 0xece3c8).setDepth(y - 1);
+    }
     this.add
-      .text(x, y, text, {
+      .text(x, y - 1, up ? "▲" : "▼", { fontFamily: "monospace", fontSize: "15px", color: "#ffffff" })
+      .setOrigin(0.5)
+      .setDepth(y);
+    this.add
+      .text(x, y + 24, label, {
         fontFamily: "monospace",
-        fontSize: "12px",
+        fontSize: "10px",
         color: "#fff7d8",
         backgroundColor: "#000000aa",
-        padding: { x: 6, y: 3 },
+        padding: { x: 4, y: 1 },
       })
       .setOrigin(0.5)
-      .setDepth(UI_DEPTH - 1);
+      .setDepth(y);
+    this.stairs.push({
+      x1: (col - 1) * T,
+      y1: row * T - 4,
+      x2: (col + 2) * T,
+      y2: (row + 1) * T + 4,
+      tx: tcol * T + T / 2,
+      ty: trow * T + T / 2,
+    });
   }
 
   update() {
@@ -1384,6 +1494,14 @@ export class OfficeScene extends Phaser.Scene {
     this.player.setDepth(this.player.y);
     this.nameLabel.setPosition(this.player.x, this.player.y - 30);
 
+    // troca de andar (deduzida pelo Y) + gatilho das escadas
+    const fNow = floorOfY(this.player.y);
+    if (fNow !== this.currentFloor) {
+      this.currentFloor = fNow;
+      this.applyFloor(fNow);
+    }
+    this.checkStairs();
+
     // anel de "falando"
     const speaking = this.voice.connected ? this.voice.speakingIds() : null;
     if (this.localRing) {
@@ -1411,20 +1529,21 @@ export class OfficeScene extends Phaser.Scene {
       this.remotes.forEach((r, sid) => {
         const p = state.players.get(sid);
         if (!p) return;
+        const vis = floorOfY(p.y) === this.currentFloor; // so vejo quem esta no meu andar
         r.sprite.x += (p.x - r.sprite.x) * 0.25;
         r.sprite.y += (p.y - r.sprite.y) * 0.25;
-        r.sprite.setDepth(r.sprite.y);
+        r.sprite.setDepth(r.sprite.y).setVisible(vis);
         const dn = DIR_NAME[p.dir] ?? "down";
         if (p.moving) r.sprite.anims.play(`c${p.charId}_${dn}`, true);
         else {
           r.sprite.anims.stop();
           r.sprite.setFrame(IDLE_FRAME[p.dir] ?? FRAME.downIdle);
         }
-        r.label.setPosition(r.sprite.x, r.sprite.y - 30);
+        r.label.setPosition(r.sprite.x, r.sprite.y - 30).setVisible(vis);
         r.ring
           .setPosition(r.sprite.x, r.sprite.y + 16)
           .setDepth(r.sprite.y - 1)
-          .setVisible(!!speaking && speaking.has(sid));
+          .setVisible(vis && !!speaking && speaking.has(sid));
       });
 
       // zona de reuniao + voz (proximidade ou bolha da sala)
@@ -1435,6 +1554,7 @@ export class OfficeScene extends Phaser.Scene {
         this.voice.applyGains((id) => {
           const p = state.players.get(id);
           if (!p) return 0;
+          if (floorOfY(p.y) !== this.currentFloor) return 0; // andar diferente: mudo
           const tz = zoneAt(p.x, p.y);
           if (myZone >= 0 || tz >= 0) return myZone >= 0 && myZone === tz ? 1 : 0;
           const d = Math.hypot(p.x - self.x, p.y - self.y);
@@ -1445,6 +1565,7 @@ export class OfficeScene extends Phaser.Scene {
         this.voice.applyShareVisibility((id) => {
           const sp = state.players.get(id);
           if (!sp) return false;
+          if (floorOfY(sp.y) !== this.currentFloor) return false;
           const sz = zoneAt(sp.x, sp.y);
           return sz >= 0 && sz === myZone;
         });
@@ -1455,6 +1576,7 @@ export class OfficeScene extends Phaser.Scene {
           if (audible) return;
           const sp = state.players.get(sid);
           if (!sp) return;
+          if (floorOfY(sp.y) !== this.currentFloor) return;
           const sz = zoneAt(sp.x, sp.y);
           if (myZone >= 0) {
             if (sz === myZone) audible = true;
