@@ -6,20 +6,38 @@ import { VoiceManager } from "../net/voice";
 
 const T = 32;
 const COLS = 30;
-const ROWS = 22;
 const SPEED = 170;
 const UI_DEPTH = 10000;
+
+// ---- mapa em 3 andares (de cima pra baixo): praia · escritorio · cripta ----
+const BEACH_ROWS = 16; // praia (topo)
+const OFFICE_ROWS = 22; // escritorio (meio) — mantem o layout atual
+const CRYPT_ROWS = 18; // cripta (baixo)
+const OY = BEACH_ROWS + 1; // 1a linha do escritorio (= sua parede de cima)
+const DIV1 = OY; // divisoria praia/escritorio
+const DIV2 = OY + OFFICE_ROWS - 1; // divisoria escritorio/cripta
+const CRYPT_Y0 = OY + OFFICE_ROWS; // 1a linha da cripta
+const ROWS = CRYPT_Y0 + CRYPT_ROWS; // total de linhas
+const PASS_C0 = 14; // passagens entre andares: colunas abertas
+const PASS_C1 = 16;
+const W = COLS * T; // largura do mapa (px)
+const H = ROWS * T; // altura do mapa (px)
 
 // dir: 0=baixo, 1=cima, 2=esquerda, 3=direita
 const DIR_NAME = ["down", "up", "left", "right"] as const;
 const IDLE_FRAME = [FRAME.downIdle, FRAME.upIdle, FRAME.leftIdle, FRAME.rightIdle];
+
+// chamas (tocha/braseiro): laranja padrao e verde amaldicoado (cripta)
+type Flame = { glow: number; tints: [number, number, number] };
+const FLAME_ORANGE: Flame = { glow: 0xff8a2e, tints: [0xfff3a0, 0xffb24d, 0xff6a2a] };
+const FLAME_GREEN: Flame = { glow: 0x47ff9e, tints: [0xb6ffd8, 0x57ffb0, 0x23e57a] };
 
 // voz: raios de proximidade (px) — queda quadratica (cai rapido com a distancia)
 const VOICE_FULL = 40; // dentro disso: volume cheio (~1 tile)
 const VOICE_MAX = 160; // alem disso: silencio (~5 tiles)
 
 // zonas de reuniao (px) — dentro de uma zona, so quem esta na MESMA zona se ouve.
-const MEETING_ZONES = [{ x1: 1 * T, y1: 1 * T, x2: 9 * T, y2: 7 * T }];
+const MEETING_ZONES = [{ x1: 1 * T, y1: (1 + OY) * T, x2: 9 * T, y2: (7 + OY) * T }];
 function zoneAt(x: number, y: number): number {
   for (let i = 0; i < MEETING_ZONES.length; i++) {
     const z = MEETING_ZONES[i];
@@ -78,8 +96,6 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   create() {
-    const W = COLS * T;
-    const H = ROWS * T;
     const sel = loadSelection();
     this.charIndex = sel.index;
     this.remotes.clear();
@@ -104,125 +120,74 @@ export class OfficeScene extends Phaser.Scene {
     this.meetingBadge = undefined;
     this.reconnectBadge = undefined;
 
-    // ---- paredes ----
+    // ---- grade de colisao (3 andares empilhados) ----
     const solid: boolean[][] = Array.from({ length: ROWS }, () =>
       Array<boolean>(COLS).fill(false),
     );
     const set = (c: number, r: number, v = true) => {
       if (r >= 0 && r < ROWS && c >= 0 && c < COLS) solid[r][c] = v;
     };
+    // bordas externas continuas + divisorias entre andares
     for (let c = 0; c < COLS; c++) {
       set(c, 0);
       set(c, ROWS - 1);
+      set(c, DIV1);
+      set(c, DIV2);
     }
     for (let r = 0; r < ROWS; r++) {
       set(0, r);
       set(COLS - 1, r);
     }
-    for (let r = 1; r <= 7; r++) set(9, r);
-    for (let c = 1; c <= 9; c++) set(c, 7);
-    set(4, 7, false);
-    const entranceCol = 15;
-    set(entranceCol, ROWS - 1, false);
+    // passagens (escadas) nas divisorias
+    for (let c = PASS_C0; c <= PASS_C1; c++) {
+      set(c, DIV1, false);
+      set(c, DIV2, false);
+    }
+    // paredes internas do escritorio (sala de reuniao), deslocadas pelo offset
+    for (let r = 1; r <= 7; r++) set(9, OY + r);
+    for (let c = 1; c <= 9; c++) set(c, OY + 7);
+    set(4, OY + 7, false);
 
-    // ---- chao + tapetes ----
-    this.add.tileSprite(0, 0, W, H, "floor").setOrigin(0).setDepth(0);
-    this.cameras.main.setBackgroundColor("#0d0b14");
-    this.addRug(4.7 * T, 3.4 * T, 7.2 * T, 5 * T, 0x5a1f1f);
-    this.addRug(15.5 * T, 18.4 * T, 5 * T, 3 * T, 0x1f2f5a);
+    // ---- chao por andar ----
+    const beachH = OY * T;
+    const officeY = OY * T;
+    const officeH = OFFICE_ROWS * T;
+    const cryptY = CRYPT_Y0 * T;
+    const cryptH = (ROWS - CRYPT_Y0) * T;
+    this.add.rectangle(0, 0, W, beachH, 0xe7d29a).setOrigin(0).setDepth(0); // areia
+    this.add.tileSprite(0, officeY, W, officeH, "floor").setOrigin(0).setDepth(0); // pedra
+    this.add.rectangle(0, cryptY, W, cryptH, 0x0b0913).setOrigin(0).setDepth(0); // cripta
+    this.cameras.main.setBackgroundColor("#07060d");
 
-    // ---- paredes ----
+    // ---- paredes (tom por andar) ----
     const walls = this.physics.add.staticGroup();
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         if (!solid[r][c]) continue;
         const key = (r * 7 + c) % 4 === 0 ? "wall2" : "wall";
         const w = walls.create(c * T + T / 2, r * T + T / 2, key) as Phaser.Physics.Arcade.Sprite;
+        if (r < OY) w.setTint(0xcdb98a); // praia: arenito claro
+        else if (r >= CRYPT_Y0) w.setTint(0x4a4660); // cripta: pedra escura
         w.setDepth(1);
       }
     }
 
-    // ---- portas ----
-    this.add.image(4 * T + T / 2, 7 * T + T / 2, "door_open").setDepth(1);
-    this.add.image(entranceCol * T + T / 2, (ROWS - 1) * T + T / 2, "door_open").setDepth(1);
-
-    // ---- mesas + cadeiras ----
-    const desks: Rect[] = [
-      { c: 13, r: 4, w: 3, h: 1 },
-      { c: 18, r: 4, w: 3, h: 1 },
-      { c: 13, r: 9, w: 3, h: 1 },
-      { c: 18, r: 9, w: 3, h: 1 },
-      { c: 23, r: 6, w: 2, h: 1 },
-      { c: 22, r: 13, w: 3, h: 1 },
-      { c: 13, r: 14, w: 3, h: 1 },
-      { c: 13, r: 18, w: 3, h: 1 },
-    ];
-    for (const d of desks) {
-      this.addChair(d);
-      this.addDesk(d);
-    }
-    this.addRoundTable(4.7 * T, 3.4 * T, 3.4 * T, 2.2 * T);
-
-    // ---- decoracao de parede ----
-    const decor: Decor[] = [
-      [12, 0, "w_long_sword1"],
-      [14, 0, "s_kite_shield1"],
-      [16, 0, "w_battle_axe1"],
-      [18, 0, "s_tower_shield1"],
-      [20, 0, "w_war_axe1"],
-      [22, 0, "s_buckler1"],
-      [24, 0, "w_morningstar1"],
-      [0, 11, "w_broad_axe1"],
-      [0, 15, "s_kite_shield1"],
-      [COLS - 1, 9, "w_mace1"],
-      [COLS - 1, 13, "s_tower_shield1"],
-      [2, 7, "s_buckler1"],
-      [6, 7, "w_scimitar1"],
-    ];
-    for (const d of decor) this.addWallDecor(d);
-
-    this.addBanner(8, 0x7a1f2a);
-    this.addBanner(11, 0x1f3a7a);
-    this.addBanner(28, 0x2a5a2a);
-
-    // ---- colunas / estatuas / fonte ----
-    this.addProp(11, 11, "column");
-    this.addProp(11, 16, "column2");
-    this.addProp(26, 6, "column");
-    this.addProp(26, 16, "column2");
-    this.addProp(2, 8, "statue_sword");
-    this.addProp(6, 8, "statue_axe");
-    this.addProp(4, 16, "statue_dragon");
-    this.addProp(27, 3, "statue_angel");
-    this.addProp(18, 18, "fountain");
-
-    // ---- barris + bau ----
-    this.addBarrel(26, 18);
-    this.addBarrel(27, 18);
-    this.addBarrel(26, 19);
-    this.addChest(24, 19);
-
-    // ---- braseiros + tochas ----
+    // ---- decoracao de cada andar ----
     this.makeFlameTexture();
-    this.addBrazier(12, 20);
-    this.addBrazier(18, 20);
-    const torches: Array<[number, number]> = [
-      [5, 0],
-      [21, 0],
-      [26, 0],
-      [0, 5],
-      [0, 18],
-      [COLS - 1, 5],
-      [COLS - 1, 18],
-      [9, 3],
-      [9, 6],
-    ];
-    for (const [c, r] of torches) this.addTorch(c, r);
+    this.buildBeach();
+    this.buildOfficeDecor(OY);
+    this.buildCrypt();
+
+    // ---- porta da sala de reuniao + placas das escadas ----
+    this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
+    const passX = ((PASS_C0 + PASS_C1 + 1) / 2) * T;
+    this.addStairLabel(passX, DIV1 * T + T / 2, "☀️ Praia ↑");
+    this.addStairLabel(passX, DIV2 * T + T / 2, "Cripta ↓ 💀");
 
     // ---- player ----
     ensureCharAnims(this, this.charIndex);
-    const spawnX = entranceCol * T + T / 2;
-    const spawnY = (ROWS - 4) * T + T / 2;
+    const spawnX = 16 * T + T / 2;
+    const spawnY = (OY + OFFICE_ROWS - 5) * T + T / 2;
     this.player = this.physics.add
       .sprite(spawnX, spawnY, charKey(this.charIndex), FRAME.downIdle)
       .setDepth(spawnY);
@@ -273,9 +238,11 @@ export class OfficeScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(UI_DEPTH);
 
-    this.addRoomLabel("Sala de Reunião", 4.7 * T, 5.5 * T);
-    this.addRoomLabel("Recepção", entranceCol * T, (ROWS - 2.2) * T);
-    this.addRoomLabel("Área de Trabalho", 18.5 * T, 11 * T);
+    this.addRoomLabel("☀️ Praia ensolarada", 15 * T, 8 * T);
+    this.addRoomLabel("Sala de Reunião", 4.7 * T, (5.5 + OY) * T);
+    this.addRoomLabel("Recepção", 16 * T, (OY + OFFICE_ROWS - 2.5) * T);
+    this.addRoomLabel("Área de Trabalho", 18.5 * T, (11 + OY) * T);
+    this.addRoomLabel("💀 Cripta Amaldiçoada", 15 * T, (CRYPT_Y0 + 2) * T);
 
     // ---- HUD em camera propria + zoom no scroll ----
     this.setupUiCameraAndZoom([instr]);
@@ -850,7 +817,7 @@ export class OfficeScene extends Phaser.Scene {
     this.obstacles.push(hb);
   }
 
-  private addBrazier(c: number, r: number) {
+  private addBrazier(c: number, r: number, pal: Flame = FLAME_ORANGE) {
     const x = c * T + T / 2;
     const y = r * T + T / 2;
     this.add.rectangle(x, y + 9, 8, 8, 0x2e2620).setDepth(y);
@@ -861,7 +828,7 @@ export class OfficeScene extends Phaser.Scene {
     const glow = this.add
       .image(x, y - 2, "flameDot")
       .setScale(3)
-      .setTint(0xff8a2e)
+      .setTint(pal.glow)
       .setAlpha(0.35)
       .setBlendMode(Phaser.BlendModes.ADD)
       .setDepth(y + 1);
@@ -883,7 +850,7 @@ export class OfficeScene extends Phaser.Scene {
         lifespan: { min: 350, max: 600 },
         frequency: 40,
         quantity: 1,
-        tint: [0xfff3a0, 0xffb24d, 0xff6a2a],
+        tint: pal.tints,
         blendMode: "ADD",
       })
       .setDepth(y + 2);
@@ -898,9 +865,9 @@ export class OfficeScene extends Phaser.Scene {
       .setDepth(0.4);
   }
 
-  private addBanner(c: number, color: number) {
+  private addBanner(c: number, color: number, oy = 0) {
     const x = c * T + T / 2;
-    const yTop = T * 0.85;
+    const yTop = oy * T + T * 0.85;
     const h = 34;
     this.add.rectangle(x, yTop + h / 2, 18, h, color).setStrokeStyle(1, 0x000000, 0.3).setDepth(2);
     this.add.rectangle(x, yTop + h / 2, 4, h, 0xcaa44a).setDepth(2);
@@ -911,18 +878,18 @@ export class OfficeScene extends Phaser.Scene {
   private addWallDecor([c, r, key]: Decor) {
     let x = c * T + T / 2;
     let y = r * T + T / 2;
-    if (r === 0) y += T * 0.5 + 2;
-    else if (r === ROWS - 1) y -= T * 0.5 + 2;
+    if (r === 0 || r === DIV1) y += T * 0.5 + 2; // pendurado virado pra dentro do andar
+    else if (r === ROWS - 1 || r === DIV2) y -= T * 0.5 + 2;
     if (c === 0) x += T * 0.5 + 2;
     else if (c === COLS - 1) x -= T * 0.5 + 2;
     this.add.image(x, y, key).setDepth(2).setScale(0.95);
   }
 
-  private addTorch(c: number, r: number) {
+  private addTorch(c: number, r: number, pal: Flame = FLAME_ORANGE) {
     let x = c * T + T / 2;
     let y = r * T + T / 2;
-    if (r === 0) y += T * 0.6;
-    else if (r === ROWS - 1) y -= T * 0.6;
+    if (r === 0 || r === DIV1) y += T * 0.6;
+    else if (r === ROWS - 1 || r === DIV2) y -= T * 0.6;
     if (c === 0) x += T * 0.6;
     else if (c === COLS - 1) x -= T * 0.6;
 
@@ -930,7 +897,7 @@ export class OfficeScene extends Phaser.Scene {
     const glow = this.add
       .image(x, y, "flameDot")
       .setScale(2.6)
-      .setTint(0xff8a2e)
+      .setTint(pal.glow)
       .setAlpha(0.3)
       .setBlendMode(Phaser.BlendModes.ADD)
       .setDepth(2);
@@ -952,7 +919,7 @@ export class OfficeScene extends Phaser.Scene {
         lifespan: { min: 300, max: 520 },
         frequency: 55,
         quantity: 1,
-        tint: [0xfff3a0, 0xffb24d, 0xff6a2a],
+        tint: pal.tints,
         blendMode: "ADD",
       })
       .setDepth(3);
@@ -980,6 +947,409 @@ export class OfficeScene extends Phaser.Scene {
     }
     g.generateTexture("flameDot", 32, 32);
     g.destroy();
+  }
+
+  // ---------- andar: escritorio (deslocado por oy) ----------
+
+  private buildOfficeDecor(oy: number) {
+    const o = oy * T;
+    this.addRug(4.7 * T, 3.4 * T + o, 7.2 * T, 5 * T, 0x5a1f1f);
+    this.addRug(15.5 * T, 18.4 * T + o, 5 * T, 3 * T, 0x1f2f5a);
+
+    const desks: Rect[] = [
+      { c: 13, r: oy + 4, w: 3, h: 1 },
+      { c: 18, r: oy + 4, w: 3, h: 1 },
+      { c: 13, r: oy + 9, w: 3, h: 1 },
+      { c: 18, r: oy + 9, w: 3, h: 1 },
+      { c: 23, r: oy + 6, w: 2, h: 1 },
+      { c: 22, r: oy + 13, w: 3, h: 1 },
+      { c: 13, r: oy + 14, w: 3, h: 1 },
+      { c: 13, r: oy + 18, w: 3, h: 1 },
+    ];
+    for (const d of desks) {
+      this.addChair(d);
+      this.addDesk(d);
+    }
+    this.addRoundTable(4.7 * T, 3.4 * T + o, 3.4 * T, 2.2 * T);
+
+    const decor: Decor[] = [
+      [12, oy, "w_long_sword1"],
+      [14, oy, "s_kite_shield1"],
+      [16, oy, "w_battle_axe1"],
+      [18, oy, "s_tower_shield1"],
+      [20, oy, "w_war_axe1"],
+      [22, oy, "s_buckler1"],
+      [24, oy, "w_morningstar1"],
+      [0, oy + 11, "w_broad_axe1"],
+      [0, oy + 15, "s_kite_shield1"],
+      [COLS - 1, oy + 9, "w_mace1"],
+      [COLS - 1, oy + 13, "s_tower_shield1"],
+      [2, oy + 7, "s_buckler1"],
+      [6, oy + 7, "w_scimitar1"],
+    ];
+    for (const d of decor) this.addWallDecor(d);
+
+    this.addBanner(8, 0x7a1f2a, oy);
+    this.addBanner(11, 0x1f3a7a, oy);
+    this.addBanner(28, 0x2a5a2a, oy);
+
+    this.addProp(11, oy + 11, "column");
+    this.addProp(11, oy + 16, "column2");
+    this.addProp(26, oy + 6, "column");
+    this.addProp(26, oy + 16, "column2");
+    this.addProp(2, oy + 8, "statue_sword");
+    this.addProp(6, oy + 8, "statue_axe");
+    this.addProp(4, oy + 16, "statue_dragon");
+    this.addProp(27, oy + 3, "statue_angel");
+    this.addProp(18, oy + 18, "fountain");
+
+    this.addBarrel(26, oy + 18);
+    this.addBarrel(27, oy + 18);
+    this.addBarrel(26, oy + 19);
+    this.addChest(24, oy + 19);
+
+    this.addBrazier(12, oy + 20);
+    this.addBrazier(18, oy + 20);
+    for (const c of [5, 21, 26]) this.addTorch(c, oy);
+    this.addTorch(0, oy + 5);
+    this.addTorch(0, oy + 16);
+    this.addTorch(COLS - 1, oy + 5);
+    this.addTorch(COLS - 1, oy + 16);
+    this.addTorch(9, oy + 3);
+    this.addTorch(9, oy + 6);
+  }
+
+  // ---------- andar: praia ensolarada (topo) ----------
+
+  private buildBeach() {
+    const oceanTop = 1 * T;
+    const oceanH = 3 * T;
+    this.add.rectangle(0, oceanTop, W, oceanH, 0x2aa7d8).setOrigin(0).setDepth(0.3);
+    this.add.rectangle(0, oceanTop, W, oceanH, 0x8fe0f2, 0.22).setOrigin(0).setDepth(0.31);
+    for (let i = 0; i < 3; i++) {
+      const wave = this.add
+        .rectangle(W / 2, oceanTop + (i + 0.6) * T, W - 24, 3, 0xffffff, 0.4)
+        .setDepth(0.32);
+      this.tweens.add({
+        targets: wave,
+        x: { from: W / 2 - 12, to: W / 2 + 12 },
+        alpha: { from: 0.2, to: 0.5 },
+        duration: 1500 + i * 350,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.inOut",
+      });
+    }
+    this.add.rectangle(0, oceanTop + oceanH, W, 6, 0xffffff, 0.6).setOrigin(0).setDepth(0.33);
+    const sea = this.add.rectangle(W / 2, oceanTop + oceanH / 2, W, oceanH, 0x000000, 0).setDepth(0);
+    this.physics.add.existing(sea, true);
+    this.obstacles.push(sea);
+
+    this.addSun(W - 4 * T, 2.6 * T);
+
+    const palms: Array<[number, number]> = [
+      [3, 7],
+      [7, 9],
+      [12, 11],
+      [20, 12],
+      [24, 8],
+      [26, 13],
+      [5, 14],
+    ];
+    for (const [c, r] of palms) this.addPalm(c, r);
+
+    this.addUmbrella(10, 13, 0xe23b3b);
+    this.addUmbrella(18, 10, 0x2a8ae2);
+    this.addBeachTowel(14, 14, 0xffd23b);
+
+    const stars: Array<[number, number]> = [
+      [15, 16],
+      [9, 12],
+      [22, 15],
+      [6, 11],
+    ];
+    for (const [c, r] of stars) this.addStarfish(c, r);
+
+    // luz quente do dia
+    this.add.rectangle(0, 0, W, OY * T, 0xfff0bf, 0.05).setOrigin(0).setDepth(0.95);
+  }
+
+  private addSun(x: number, y: number) {
+    const halo = this.add
+      .ellipse(x, y, 230, 230, 0xffe27a, 0.22)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(0.5);
+    this.add
+      .ellipse(x, y, 130, 130, 0xffe9a0, 0.5)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(0.5);
+    for (let i = 0; i < 6; i++) {
+      this.add
+        .rectangle(x, y, 7, 270, 0xffe9a0, 0.4)
+        .setAngle(i * 30)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setDepth(0.45);
+    }
+    this.add.ellipse(x, y, 76, 76, 0xfff4c2).setDepth(0.6);
+    this.tweens.add({
+      targets: halo,
+      scale: { from: 0.9, to: 1.12 },
+      alpha: { from: 0.16, to: 0.3 },
+      duration: 2400,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.inOut",
+    });
+  }
+
+  private addPalm(c: number, r: number) {
+    const x = c * T + T / 2;
+    const base = r * T + T / 2 + 8;
+    for (let i = 0; i < 5; i++) {
+      this.add
+        .rectangle(x + i * 2, base - i * 9, 8 - i * 0.5, 11, 0x9a6a3a)
+        .setStrokeStyle(1, 0x5a3a1e)
+        .setDepth(base);
+    }
+    const topx = x + 10;
+    const topy = base - 46;
+    const frondCols = [0x2e8b3a, 0x37a847, 0x227a30];
+    const angs = [-150, -110, -70, -30, 20, 60];
+    for (let i = 0; i < angs.length; i++) {
+      const a = (angs[i] * Math.PI) / 180;
+      this.add
+        .ellipse(topx + Math.cos(a) * 18, topy + Math.sin(a) * 18, 42, 13, frondCols[i % 3])
+        .setAngle(angs[i])
+        .setDepth(base + 1);
+    }
+    this.add.ellipse(topx - 4, topy + 5, 9, 9, 0x6b4a2a).setStrokeStyle(1, 0x3a2614).setDepth(base + 2);
+    this.add.ellipse(topx + 6, topy + 6, 9, 9, 0x6b4a2a).setStrokeStyle(1, 0x3a2614).setDepth(base + 2);
+    this.add.ellipse(x + 4, base + 8, 36, 11, 0x000000, 0.14).setDepth(base - 1);
+  }
+
+  private addUmbrella(c: number, r: number, color: number) {
+    const x = c * T + T / 2;
+    const y = r * T + T / 2;
+    const R = 24;
+    this.add.ellipse(x, y + 4, 2 * R, R * 0.9, 0x000000, 0.12).setDepth(y - 1);
+    const g = this.add.graphics().setDepth(y);
+    for (let i = 0; i < 8; i++) {
+      g.fillStyle(i % 2 ? color : 0xfff2f2, 1);
+      g.beginPath();
+      g.slice(x, y, R, (i / 8) * Math.PI * 2, ((i + 1) / 8) * Math.PI * 2, false);
+      g.closePath();
+      g.fillPath();
+    }
+    g.lineStyle(1, 0x000000, 0.14);
+    g.strokeCircle(x, y, R);
+    this.add.ellipse(x, y, 6, 6, 0x8a7a5a).setDepth(y + 0.1);
+  }
+
+  private addBeachTowel(c: number, r: number, color: number) {
+    const x = c * T + T / 2;
+    const y = r * T + T / 2;
+    this.add.rectangle(x, y, 2 * T, 1.3 * T, color, 0.95).setStrokeStyle(2, 0xffffff, 0.7).setDepth(0.4);
+    this.add.rectangle(x, y, 2 * T - 10, 1.3 * T - 10).setStrokeStyle(1, 0xffffff, 0.45).setDepth(0.4);
+  }
+
+  private addStarfish(c: number, r: number) {
+    const x = c * T + T / 2;
+    const y = r * T + T / 2;
+    const col = 0xe8843b;
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+      this.add
+        .ellipse(x + Math.cos(a) * 7, y + Math.sin(a) * 7, 6, 13, col)
+        .setAngle((a * 180) / Math.PI + 90)
+        .setStrokeStyle(1, 0x9a4a1e)
+        .setDepth(y);
+    }
+    this.add.ellipse(x, y, 9, 9, col).setStrokeStyle(1, 0x9a4a1e).setDepth(y);
+  }
+
+  // ---------- andar: cripta amaldicoada (baixo) ----------
+
+  private buildCrypt() {
+    const top = CRYPT_Y0 * T;
+    const cy = CRYPT_Y0;
+    const ch = (ROWS - CRYPT_Y0) * T;
+    this.add.rectangle(0, top, W, ch, 0x05040a, 0.45).setOrigin(0).setDepth(0.2);
+    for (const [gx, gy, gc] of [
+      [6, 4, 0x1f8a4a],
+      [23, 7, 0x5a2a8a],
+      [14, 13, 0x2a5a8a],
+    ] as Array<[number, number, number]>) {
+      this.add
+        .ellipse(gx * T, top + gy * T, 190, 130, gc, 0.16)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setDepth(0.25);
+    }
+    this.addDeadDragon(15 * T, top + 9 * T);
+    const skulls: Array<[number, number]> = [
+      [3, cy + 3],
+      [8, cy + 6],
+      [26, cy + 4],
+      [5, cy + 12],
+      [24, cy + 13],
+      [19, cy + 3],
+      [11, cy + 15],
+    ];
+    for (const [c, rr] of skulls) this.addSkull(c, rr);
+    this.addTombstone(4, cy + 5);
+    this.addTombstone(25, cy + 9);
+    this.addTombstone(8, cy + 14);
+    this.addBonePile(20, cy + 12);
+    this.addBonePile(10, cy + 8);
+    this.addProp(4, cy + 2, "statue_dragon");
+    this.addProp(26, cy + 15, "statue_dragon");
+    this.addSpirit(8 * T, top + 5 * T);
+    this.addSpirit(22 * T, top + 11 * T);
+    this.addSpirit(15 * T, top + 4 * T);
+    this.addTorch(0, cy + 4, FLAME_GREEN);
+    this.addTorch(COLS - 1, cy + 4, FLAME_GREEN);
+    this.addTorch(0, cy + 12, FLAME_GREEN);
+    this.addTorch(COLS - 1, cy + 12, FLAME_GREEN);
+    this.addBrazier(11, ROWS - 3, FLAME_GREEN);
+    this.addBrazier(19, ROWS - 3, FLAME_GREEN);
+  }
+
+  private addSkull(c: number, r: number) {
+    const x = c * T + T / 2;
+    const y = r * T + T / 2;
+    const d = y;
+    this.add.ellipse(x, y, 18, 19, 0xd8d2c0).setStrokeStyle(1, 0x8a8470).setDepth(d);
+    this.add.ellipse(x - 4, y - 1, 5, 6, 0x12100a).setDepth(d + 0.1);
+    this.add.ellipse(x + 4, y - 1, 5, 6, 0x12100a).setDepth(d + 0.1);
+    this.add.ellipse(x, y + 3, 2.5, 3, 0x12100a).setDepth(d + 0.1);
+    this.add.rectangle(x, y + 8, 12, 5, 0xd8d2c0).setStrokeStyle(1, 0x8a8470).setDepth(d);
+    for (let i = -2; i <= 2; i++) {
+      this.add.rectangle(x + i * 3, y + 8, 1.4, 4, 0x8a8470).setDepth(d + 0.1);
+    }
+  }
+
+  private addDeadDragon(x: number, y: number) {
+    const bone = 0xcfc8b4;
+    const dk = 0x8a8470;
+    const d = y;
+    const spine: Array<[number, number]> = [];
+    for (let i = 0; i < 12; i++) {
+      const sx = x - 92 + i * 16;
+      const sy = y + Math.sin(i * 0.5) * 10;
+      spine.push([sx, sy]);
+      this.add.ellipse(sx, sy, 12, 9, bone).setStrokeStyle(1, dk).setDepth(d);
+    }
+    for (let i = 2; i < 9; i++) {
+      const [sx, sy] = spine[i];
+      this.add.ellipse(sx, sy + 17, 8, 36, 0x000000, 0).setStrokeStyle(2, bone).setDepth(d - 0.1);
+    }
+    const [hx, hy] = spine[0];
+    this.add.ellipse(hx - 16, hy, 40, 26, bone).setStrokeStyle(2, dk).setDepth(d + 0.2);
+    this.add.ellipse(hx - 34, hy + 2, 20, 12, bone).setStrokeStyle(1, dk).setDepth(d + 0.2);
+    this.add.rectangle(hx - 26, hy - 14, 4, 18, bone).setStrokeStyle(1, dk).setAngle(28).setDepth(d + 0.2);
+    this.add.rectangle(hx - 18, hy - 15, 4, 20, bone).setStrokeStyle(1, dk).setAngle(12).setDepth(d + 0.2);
+    this.add.ellipse(hx - 20, hy - 1, 8, 9, 0x7a1f1f).setDepth(d + 0.3);
+    this.add
+      .ellipse(hx - 20, hy - 1, 16, 17, 0xff3a3a, 0.16)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(d + 0.3);
+    const [wx, wy] = spine[5];
+    for (let i = 0; i < 4; i++) {
+      this.add
+        .rectangle(wx + i * 10, wy - 30, 4, 64 - i * 6, bone)
+        .setStrokeStyle(1, dk)
+        .setAngle(-30 + i * 16)
+        .setDepth(d - 0.2);
+    }
+    const [tx, ty] = spine[11];
+    for (let i = 0; i < 5; i++) {
+      this.add
+        .ellipse(tx + 12 + i * 11, ty + i * 5, 9 - i, 6 - i * 0.6, bone)
+        .setStrokeStyle(1, dk)
+        .setDepth(d);
+    }
+  }
+
+  private addSpirit(x: number, y: number) {
+    const d = ROWS * T + 100; // flutuam acima de tudo
+    const glow = this.add
+      .ellipse(x, y, 46, 56, 0x4affa0, 0.18)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(d);
+    const body = this.add
+      .ellipse(x, y, 26, 34, 0xbfead8, 0.42)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(d);
+    const e1 = this.add.ellipse(x - 5, y - 4, 4, 7, 0x0a3a24, 0.85).setDepth(d + 0.1);
+    const e2 = this.add.ellipse(x + 5, y - 4, 4, 7, 0x0a3a24, 0.85).setDepth(d + 0.1);
+    const t1 = this.add
+      .ellipse(x - 6, y + 15, 8, 12, 0xbfead8, 0.3)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(d);
+    const t2 = this.add
+      .ellipse(x + 5, y + 15, 8, 12, 0xbfead8, 0.3)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(d);
+    this.tweens.add({
+      targets: [glow, body, e1, e2, t1, t2],
+      y: "+=14",
+      duration: 1900,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.inOut",
+    });
+    this.tweens.add({
+      targets: [glow, body],
+      alpha: { from: 0.22, to: 0.5 },
+      duration: 1300,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.inOut",
+    });
+  }
+
+  private addTombstone(c: number, r: number) {
+    const x = c * T + T / 2;
+    const y = r * T + T / 2;
+    const d = y;
+    this.add.ellipse(x, y - 8, 28, 26, 0x565160).setDepth(d);
+    this.add.rectangle(x, y, 28, 26, 0x565160).setStrokeStyle(2, 0x2c2836).setDepth(d);
+    this.add.rectangle(x, y - 2, 16, 3, 0x2c2836).setDepth(d + 0.1);
+    this.add.rectangle(x, y + 4, 11, 3, 0x2c2836).setDepth(d + 0.1);
+    const hb = this.add.rectangle(x, y, 26, 22).setVisible(false);
+    this.physics.add.existing(hb, true);
+    this.obstacles.push(hb);
+  }
+
+  private addBonePile(c: number, r: number) {
+    const x = c * T + T / 2;
+    const y = r * T + T / 2;
+    const d = y;
+    const bone = 0xcfc8b4;
+    const dk = 0x8a8470;
+    for (const [dx, dy, ang] of [
+      [-6, 2, 30],
+      [5, -2, -20],
+      [0, 5, 80],
+      [-2, -4, 150],
+    ] as Array<[number, number, number]>) {
+      const rad = (ang * Math.PI) / 180;
+      this.add.rectangle(x + dx, y + dy, 3, 18, bone).setStrokeStyle(1, dk).setAngle(ang).setDepth(d);
+      this.add.ellipse(x + dx + Math.cos(rad) * 8, y + dy + Math.sin(rad) * 8, 5, 5, bone).setDepth(d);
+      this.add.ellipse(x + dx - Math.cos(rad) * 8, y + dy - Math.sin(rad) * 8, 5, 5, bone).setDepth(d);
+    }
+  }
+
+  private addStairLabel(x: number, y: number, text: string) {
+    this.add
+      .text(x, y, text, {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#fff7d8",
+        backgroundColor: "#000000aa",
+        padding: { x: 6, y: 3 },
+      })
+      .setOrigin(0.5)
+      .setDepth(UI_DEPTH - 1);
   }
 
   update() {

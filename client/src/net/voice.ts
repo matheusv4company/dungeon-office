@@ -204,6 +204,7 @@ export class VoiceManager {
       s.card.remove();
     });
     this.shares.clear();
+    this.selfShare?.card.remove();
     this.selfShare = undefined;
     this.sharePanel?.remove();
     this.sharePanel = undefined;
@@ -228,7 +229,7 @@ export class VoiceManager {
 
   private updatePanelDisplay(): void {
     if (!this.sharePanel) return;
-    const any = !!this.selfShare || Array.from(this.shares.values()).some((s) => s.visible);
+    const any = Array.from(this.shares.values()).some((s) => s.visible);
     this.sharePanel.style.display = any ? "flex" : "none";
   }
 
@@ -282,33 +283,33 @@ export class VoiceManager {
 
   // ---- self-view: quem compartilha ve a propria tela ----
 
+  // PiP pequeno no canto: quem compartilha so precisa confirmar que esta no ar,
+  // sem cobrir o escritorio (nao abre aba nem rouba o foco do trabalho).
   private showSelfShare(): void {
     const pub = this.room?.localParticipant.getTrackPublication(Track.Source.ScreenShare);
     const track = pub?.videoTrack;
     if (!track) return;
     this.hideSelfShare();
-    const panel = this.ensureSharePanel();
     const card = document.createElement("div");
     card.style.cssText =
-      "background:#15131d;border:2px solid #2a7a3a;border-radius:10px;padding:8px;" +
-      "margin-bottom:8px;box-shadow:0 6px 24px #000c;";
+      "position:fixed;right:12px;bottom:12px;z-index:9998;background:#15131d;" +
+      "border:2px solid #2a7a3a;border-radius:9px;padding:5px;box-shadow:0 4px 16px #000b;";
     const header = document.createElement("div");
-    header.style.cssText = "font:13px monospace;color:#9fe6b0;margin-bottom:6px;";
-    header.textContent = "🖥️ Você está compartilhando";
+    header.style.cssText =
+      "font:10px monospace;color:#9fe6b0;margin-bottom:3px;text-align:center;";
+    header.textContent = "🖥️ compartilhando";
     const video = track.attach() as HTMLVideoElement;
     video.muted = true;
     video.style.cssText =
-      "display:block;width:440px;max-width:46vw;max-height:40vh;border-radius:6px;background:#000;";
+      "display:block;width:180px;max-width:34vw;border-radius:4px;background:#000;";
     card.append(header, video);
-    panel.insertBefore(card, panel.firstChild);
+    document.body.appendChild(card);
     this.selfShare = { card, video };
-    this.updatePanelDisplay();
   }
 
   private hideSelfShare(): void {
     if (!this.selfShare) return;
     this.selfShare.card.remove();
     this.selfShare = undefined;
-    this.updatePanelDisplay();
   }
 }
