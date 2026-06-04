@@ -14,9 +14,9 @@ const UI_DEPTH = 10000;
 const DIR_NAME = ["down", "up", "left", "right"] as const;
 const IDLE_FRAME = [FRAME.downIdle, FRAME.upIdle, FRAME.leftIdle, FRAME.rightIdle];
 
-// voz: raios de proximidade (px)
-const VOICE_FULL = 70;
-const VOICE_MAX = 250;
+// voz: raios de proximidade (px) — queda quadratica (cai rapido com a distancia)
+const VOICE_FULL = 40; // dentro disso: volume cheio (~1 tile)
+const VOICE_MAX = 160; // alem disso: silencio (~5 tiles)
 
 // zonas de reuniao (px) — dentro de uma zona, so quem esta na MESMA zona se ouve.
 const MEETING_ZONES = [{ x1: 1 * T, y1: 1 * T, x2: 9 * T, y2: 7 * T }];
@@ -55,6 +55,8 @@ export class OfficeScene extends Phaser.Scene {
   private voiceBtn?: Phaser.GameObjects.Text;
   private shareBtn?: Phaser.GameObjects.Text;
   private lastSharing = false;
+  private voiceOn = false;
+  private lastMic = false;
   private sessionId = "";
   private meetingBadge?: Phaser.GameObjects.Text;
   private roster?: Phaser.GameObjects.Text;
@@ -80,6 +82,8 @@ export class OfficeScene extends Phaser.Scene {
     this.voiceBtn = undefined;
     this.shareBtn = undefined;
     this.lastSharing = false;
+    this.voiceOn = false;
+    this.lastMic = false;
     this.roster = undefined;
     this.localRing = undefined;
     this.meetingBadge = undefined;
@@ -401,7 +405,8 @@ export class OfficeScene extends Phaser.Scene {
           btn.setText("🎙️ conectando…").setBackgroundColor("#555");
           await this.voice.connect(this.sessionId, loadSelection().name || "Convidado");
         }
-        await this.voice.setMicEnabled(!this.voice.micEnabled);
+        this.voiceOn = !this.voiceOn;
+        await this.voice.setMicEnabled(this.voiceOn);
       } catch (e) {
         console.warn("[voz] indisponível", e);
         btn.setText("🎙️ voz indisponível").setBackgroundColor("#7a2a2a");
@@ -409,6 +414,7 @@ export class OfficeScene extends Phaser.Scene {
         return;
       }
       busy = false;
+      this.lastMic = this.voice.micEnabled;
       this.updateVoiceBtn();
     });
   }
@@ -459,12 +465,12 @@ export class OfficeScene extends Phaser.Scene {
 
   private updateVoiceBtn() {
     if (!this.voiceBtn) return;
-    if (!this.voice.connected) {
+    if (!this.voiceOn) {
       this.voiceBtn.setText("🎙️ Ativar voz").setBackgroundColor("#2a7a3a");
-    } else if (!this.voice.micEnabled) {
-      this.voiceBtn.setText("🔇 Mudo — clique p/ falar").setBackgroundColor("#7a2a2a");
+    } else if (this.voice.micEnabled) {
+      this.voiceBtn.setText("🎙️ Voz ativa — transmitindo").setBackgroundColor("#2a7a3a");
     } else {
-      this.voiceBtn.setText("🎙️ Falando — clique p/ mutar").setBackgroundColor("#2a7a3a");
+      this.voiceBtn.setText("🔈 Voz ativa — em espera (sozinho)").setBackgroundColor("#7a6a2a");
     }
   }
 
@@ -817,7 +823,8 @@ export class OfficeScene extends Phaser.Scene {
           const tz = zoneAt(p.x, p.y);
           if (myZone >= 0 || tz >= 0) return myZone >= 0 && myZone === tz ? 1 : 0;
           const d = Math.hypot(p.x - self.x, p.y - self.y);
-          return d <= VOICE_FULL ? 1 : d >= VOICE_MAX ? 0 : (VOICE_MAX - d) / (VOICE_MAX - VOICE_FULL);
+          const t = Math.max(0, Math.min(1, (VOICE_MAX - d) / (VOICE_MAX - VOICE_FULL)));
+          return t * t; // queda quadratica
         });
         // tela compartilhada: visivel so pra quem esta na MESMA sala de reuniao
         this.voice.applyShareVisibility((id) => {
@@ -826,6 +833,26 @@ export class OfficeScene extends Phaser.Scene {
           const sz = zoneAt(sp.x, sp.y);
           return sz >= 0 && sz === myZone;
         });
+
+        // auto-mute por privacidade: so transmite se alguem pode te ouvir
+        let audible = false;
+        this.remotes.forEach((_r, sid) => {
+          if (audible) return;
+          const sp = state.players.get(sid);
+          if (!sp) return;
+          const sz = zoneAt(sp.x, sp.y);
+          if (myZone >= 0) {
+            if (sz === myZone) audible = true;
+          } else if (sz < 0 && Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX) {
+            audible = true;
+          }
+        });
+        const wantMic = this.voiceOn && audible;
+        if (wantMic !== this.voice.micEnabled) void this.voice.setMicEnabled(wantMic);
+        if (this.voice.micEnabled !== this.lastMic) {
+          this.lastMic = this.voice.micEnabled;
+          this.updateVoiceBtn();
+        }
       }
     }
 
