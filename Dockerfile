@@ -2,9 +2,13 @@
 FROM node:22-slim
 
 # git: o Colyseus instala o uWebSockets.js a partir de um repositorio git.
+# O lockfile resolve via SSH; reescrevemos para HTTPS (repo publico, sem auth)
+# e instalamos ca-certificates para o TLS do clone funcionar.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git \
-  && rm -rf /var/lib/apt/lists/*
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" \
+  && git config --global url."https://github.com/".insteadOf "git@github.com:"
 
 WORKDIR /app
 
