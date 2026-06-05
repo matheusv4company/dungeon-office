@@ -40,6 +40,12 @@ export class OfficeRoom extends Room<OfficeState> {
       });
     });
 
+    // "Levantar a mao": marca/desmarca pedido pra falar (visivel a todos).
+    this.onMessage("hand", (client, msg: { raised?: boolean }) => {
+      const p = this.state.players.get(client.sessionId);
+      if (p) p.handRaised = !!msg?.raised;
+    });
+
     console.log("[OfficeRoom] sala criada");
   }
 

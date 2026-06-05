@@ -10,4 +10,6 @@ export class Player extends Schema {
   @type("string") name = "Convidado";
   /** indice do personagem escolhido (0..9) */
   @type("uint8") charId = 0;
+  /** maozinha levantada (pedir pra falar) */
+  @type("boolean") handRaised = false;
 }

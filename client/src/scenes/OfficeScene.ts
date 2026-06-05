@@ -35,7 +35,10 @@ const VOICE_FULL = 40; // dentro disso: volume cheio (~1 tile)
 const VOICE_MAX = 160; // alem disso: silencio (~5 tiles)
 
 // zonas de reuniao (px) — dentro de uma zona, so quem esta na MESMA zona se ouve.
-const MEETING_ZONES = [{ x1: 1 * T, y1: (1 + OY) * T, x2: 9 * T, y2: (7 + OY) * T }];
+// A posicao rastreada e o CENTRO do sprite, que fica ~0.6 tile ACIMA dos pes; por
+// isso a zona sobe ate a parede de cima (OY) e encosta nas laterais — assim quem
+// fica colado em qualquer parede continua dentro da bolha, e nada vaza pro lado de fora.
+const MEETING_ZONES = [{ x1: 0, y1: OY * T, x2: 9 * T, y2: (OY + 7) * T }];
 function zoneAt(x: number, y: number): number {
   for (let i = 0; i < MEETING_ZONES.length; i++) {
     const z = MEETING_ZONES[i];
@@ -57,6 +60,7 @@ type Remote = {
   sprite: Phaser.GameObjects.Sprite;
   label: Phaser.GameObjects.Text;
   ring: Phaser.GameObjects.Ellipse;
+  hand: Phaser.GameObjects.Text;
 };
 
 export class OfficeScene extends Phaser.Scene {
@@ -84,11 +88,19 @@ export class OfficeScene extends Phaser.Scene {
   private lastMic = false;
   private sessionId = "";
   private meetingBadge?: Phaser.GameObjects.Text;
-  private roster?: Phaser.GameObjects.Text;
+  private rosterHeader?: Phaser.GameObjects.Text;
+  private rosterRows: Phaser.GameObjects.Text[] = [];
   private localRing?: Phaser.GameObjects.Ellipse;
   private reconnectBadge?: Phaser.GameObjects.Text;
   private leaving = false;
   private reconnecting = false;
+
+  // levantar a mao (pedir pra falar)
+  private handBtn?: Phaser.GameObjects.Text;
+  private handRaised = false;
+  private handKey?: Phaser.Input.Keyboard.Key;
+  private localHand?: Phaser.GameObjects.Text;
+  private lastHandsSig = "";
 
   // camera/zoom — HUD fica numa camera propria pra NAO escalar com o zoom
   private uiCam?: Phaser.Cameras.Scene2D.Camera;
@@ -132,10 +144,15 @@ export class OfficeScene extends Phaser.Scene {
     this.lastSharing = false;
     this.voiceOn = false;
     this.lastMic = false;
-    this.roster = undefined;
+    this.rosterHeader = undefined;
+    this.rosterRows = [];
     this.localRing = undefined;
     this.meetingBadge = undefined;
     this.reconnectBadge = undefined;
+    this.handBtn = undefined;
+    this.handRaised = false;
+    this.localHand = undefined;
+    this.lastHandsSig = "";
     this.floorObjs = [[], [], []];
     this.currentFloor = 1;
     this.stairs = [];
@@ -233,6 +250,12 @@ export class OfficeScene extends Phaser.Scene {
       .setVisible(false)
       .setDepth(spawnY - 1);
 
+    this.localHand = this.add
+      .text(spawnX, spawnY - 48, "✋", { fontFamily: "monospace", fontSize: "18px" })
+      .setOrigin(0.5)
+      .setVisible(false)
+      .setDepth(UI_DEPTH);
+
     // ---- camera + input + HUD ----
     const cam = this.cameras.main;
     cam.startFollow(this.player);
@@ -247,9 +270,10 @@ export class OfficeScene extends Phaser.Scene {
       S: kb.addKey(Phaser.Input.Keyboard.KeyCodes.S),
       D: kb.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     };
+    this.handKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.H); // levantar/baixar a mao
 
     const instr = this.add
-      .text(12, 12, "WASD / setas — andar  ·  scroll — zoom  ·  clique no nome de alguém — chamar", {
+      .text(12, 12, "WASD / setas — andar  ·  scroll — zoom  ·  clique num nome — chamar  ·  H — levantar a mão", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -291,6 +315,7 @@ export class OfficeScene extends Phaser.Scene {
       this.setupVoiceButton();
       this.setupShareButton();
       this.setupMicButton();
+      this.setupHandButton();
       this.wireRoom(room, name, x, y);
       console.log("[net] conectado:", room.sessionId);
     } catch (e) {
@@ -330,6 +355,7 @@ export class OfficeScene extends Phaser.Scene {
       r.sprite.destroy();
       r.label.destroy();
       r.ring.destroy();
+      r.hand.destroy();
     });
     this.remotes.clear();
     this.refreshRoster();
@@ -381,14 +407,19 @@ export class OfficeScene extends Phaser.Scene {
       .setStrokeStyle(3, 0x3aff6a)
       .setVisible(false)
       .setDepth(player.y - 1);
+    const hand = this.add
+      .text(player.x, player.y - 48, "✋", { fontFamily: "monospace", fontSize: "18px" })
+      .setOrigin(0.5)
+      .setVisible(false)
+      .setDepth(UI_DEPTH);
     // clicar no nome = chamar essa pessoa
     label.setInteractive({ useHandCursor: true });
     label.on("pointerover", () => label.setColor("#ffd34d"));
     label.on("pointerout", () => label.setColor("#ffe9b0"));
     label.on("pointerdown", () => this.callPlayer(sessionId));
     // remotos sao mundo: a camera do HUD nao deve desenha-los
-    this.uiCam?.ignore([sprite, label, ring]);
-    this.remotes.set(sessionId, { sprite, label, ring });
+    this.uiCam?.ignore([sprite, label, ring, hand]);
+    this.remotes.set(sessionId, { sprite, label, ring, hand });
   }
 
   private removeRemote(sessionId: string) {
@@ -397,6 +428,7 @@ export class OfficeScene extends Phaser.Scene {
       r.sprite.destroy();
       r.label.destroy();
       r.ring.destroy();
+      r.hand.destroy();
       this.remotes.delete(sessionId);
     }
   }
@@ -521,29 +553,57 @@ export class OfficeScene extends Phaser.Scene {
     const state = this.room?.state as unknown as
       | { players: { forEach(cb: (p: any, id: string) => void): void } }
       | undefined;
-    let count = 0;
-    const lines: string[] = [];
+    const players: Array<{ id: string; name: string; hand: boolean }> = [];
     if (state) {
       state.players.forEach((p: any, id: string) => {
-        count++;
-        lines.push((id === this.sessionId ? "» " : "  ") + String(p.name));
+        const hand = id === this.sessionId ? this.handRaised : !!p.handRaised;
+        players.push({ id, name: String(p.name), hand });
       });
     }
-    const txt = `👥 Online: ${count}\n` + lines.join("\n");
-    if (!this.roster) {
-      this.roster = this.add
-        .text(12, 44, txt, {
+    // cabecalho
+    const headerTxt = `👥 Online: ${players.length}  ·  clique num nome pra chamar`;
+    if (!this.rosterHeader) {
+      this.rosterHeader = this.add
+        .text(12, 44, headerTxt, {
           fontFamily: "monospace",
           fontSize: "12px",
           color: "#e8e0c8",
           backgroundColor: "#000000aa",
-          padding: { x: 8, y: 6 },
+          padding: { x: 8, y: 5 },
         })
         .setScrollFactor(0)
         .setDepth(UI_DEPTH);
-      this.hudLayer?.add(this.roster);
+      this.hudLayer?.add(this.rosterHeader);
     } else {
-      this.roster.setText(txt);
+      this.rosterHeader.setText(headerTxt);
+    }
+    // uma linha clicavel por pessoa (clicar = chamar; ✋ = mao levantada)
+    this.rosterRows.forEach((t) => t.destroy());
+    this.rosterRows = [];
+    let y = 70;
+    for (const pl of players) {
+      const me = pl.id === this.sessionId;
+      const hand = pl.hand ? "✋ " : "";
+      const txt = me ? `» ${hand}${pl.name} (você)` : `📣 ${hand}${pl.name}`;
+      const row = this.add
+        .text(14, y, txt, {
+          fontFamily: "monospace",
+          fontSize: "12px",
+          color: me ? "#9fe6b0" : "#e8e0c8",
+          backgroundColor: "#000000aa",
+          padding: { x: 6, y: 3 },
+        })
+        .setScrollFactor(0)
+        .setDepth(UI_DEPTH);
+      this.hudLayer?.add(row);
+      if (!me) {
+        row.setInteractive({ useHandCursor: true });
+        row.on("pointerover", () => row.setColor("#ffd34d"));
+        row.on("pointerout", () => row.setColor("#e8e0c8"));
+        row.on("pointerdown", () => this.callPlayer(pl.id));
+      }
+      this.rosterRows.push(row);
+      y += 22;
     }
   }
 
@@ -621,6 +681,41 @@ export class OfficeScene extends Phaser.Scene {
     this.micBtn = btn;
     this.hudLayer?.add(btn);
     btn.on("pointerdown", () => void this.toggleMicMenu());
+  }
+
+  private setupHandButton() {
+    if (this.handBtn) return;
+    const btn = this.add
+      .text(this.scale.width - 16, 124, "✋ Levantar a mão", {
+        fontFamily: "monospace",
+        fontSize: "14px",
+        color: "#ffffff",
+        backgroundColor: "#4a4a6a",
+        padding: { x: 9, y: 6 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH)
+      .setInteractive({ useHandCursor: true });
+    this.handBtn = btn;
+    this.hudLayer?.add(btn);
+    btn.on("pointerdown", () => this.toggleHand());
+  }
+
+  /** Alterna "mao levantada" e avisa o servidor (todos veem). */
+  private toggleHand() {
+    this.handRaised = !this.handRaised;
+    this.room?.send("hand", { raised: this.handRaised });
+    this.updateHandBtn();
+  }
+
+  private updateHandBtn() {
+    if (!this.handBtn) return;
+    if (this.handRaised) {
+      this.handBtn.setText("✋ Baixar a mão").setBackgroundColor("#2a7a3a");
+    } else {
+      this.handBtn.setText("✋ Levantar a mão").setBackgroundColor("#4a4a6a");
+    }
   }
 
   private async toggleMicMenu() {
@@ -1579,6 +1674,10 @@ export class OfficeScene extends Phaser.Scene {
         .setVisible(!!speaking && speaking.has(this.sessionId));
     }
 
+    // levantar a mao (tecla H) + ✋ acima do proprio personagem
+    if (this.handKey && Phaser.Input.Keyboard.JustDown(this.handKey)) this.toggleHand();
+    this.localHand?.setPosition(this.player.x, this.player.y - 48).setVisible(this.handRaised);
+
     // envia minha posicao (throttle ~80ms)
     const now = this.time.now;
     if (this.room && now - this.lastSent > 80) {
@@ -1612,7 +1711,19 @@ export class OfficeScene extends Phaser.Scene {
           .setPosition(r.sprite.x, r.sprite.y + 16)
           .setDepth(r.sprite.y - 1)
           .setVisible(vis && !!speaking && speaking.has(sid));
+        r.hand.setPosition(r.sprite.x, r.sprite.y - 48).setVisible(vis && !!p.handRaised);
       });
+
+      // se alguem levantou/baixou a mao, atualiza o roster (sem refazer a cada frame)
+      let handsSig = this.handRaised ? "me," : "";
+      this.remotes.forEach((_r, sid) => {
+        const p = state.players.get(sid);
+        if (p?.handRaised) handsSig += sid + ",";
+      });
+      if (handsSig !== this.lastHandsSig) {
+        this.lastHandsSig = handsSig;
+        this.refreshRoster();
+      }
 
       // zona de reuniao + voz (proximidade ou bolha da sala)
       const self = { x: this.player.x, y: this.player.y };
@@ -1664,6 +1775,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.voiceBtn) this.voiceBtn.setPosition(this.scale.width - 16, 16);
     if (this.shareBtn) this.shareBtn.setPosition(this.scale.width - 16, 52);
     if (this.micBtn) this.micBtn.setPosition(this.scale.width - 16, 88);
+    if (this.handBtn) this.handBtn.setPosition(this.scale.width - 16, 124);
     if (this.voice.sharing !== this.lastSharing) {
       this.lastSharing = this.voice.sharing;
       this.updateShareBtn();
