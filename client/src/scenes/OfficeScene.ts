@@ -61,6 +61,10 @@ type Remote = {
   label: Phaser.GameObjects.Text;
   ring: Phaser.GameObjects.Ellipse;
   hand: Phaser.GameObjects.Text;
+  hpBg: Phaser.GameObjects.Rectangle;
+  hpFill: Phaser.GameObjects.Rectangle;
+  hp: number;
+  dmgAt: number; // quando levou dano por ultimo (ms da cena); 0 = nunca
 };
 
 export class OfficeScene extends Phaser.Scene {
@@ -105,6 +109,14 @@ export class OfficeScene extends Phaser.Scene {
   // bola de fogo (espaco) — efeito efemero sincronizado
   private fireKey?: Phaser.Input.Keyboard.Key;
   private lastFire = 0;
+
+  // HP / dano / morte
+  private dead = false;
+  private myHpBg?: Phaser.GameObjects.Rectangle;
+  private myHpFill?: Phaser.GameObjects.Rectangle;
+  private myHp = 100;
+  private myDmgAt = 0;
+  private deathOverlay?: HTMLDivElement;
 
   // camera/zoom — HUD fica numa camera propria pra NAO escalar com o zoom
   private uiCam?: Phaser.Cameras.Scene2D.Camera;
@@ -158,6 +170,13 @@ export class OfficeScene extends Phaser.Scene {
     this.localHand = undefined;
     this.lastHandsSig = "";
     this.lastFire = 0;
+    this.dead = false;
+    this.myHp = 100;
+    this.myDmgAt = 0;
+    this.myHpBg = undefined;
+    this.myHpFill = undefined;
+    this.deathOverlay?.remove();
+    this.deathOverlay = undefined;
     this.floorObjs = [[], [], []];
     this.currentFloor = 1;
     this.stairs = [];
@@ -256,8 +275,19 @@ export class OfficeScene extends Phaser.Scene {
       .setDepth(spawnY - 1);
 
     this.localHand = this.add
-      .text(spawnX, spawnY - 48, "✋", { fontFamily: "monospace", fontSize: "18px" })
+      .text(spawnX, spawnY - 60, "✋", { fontFamily: "monospace", fontSize: "18px" })
       .setOrigin(0.5)
+      .setVisible(false)
+      .setDepth(UI_DEPTH);
+
+    this.myHpBg = this.add
+      .rectangle(spawnX, spawnY - 44, 32, 6, 0x000000, 0.6)
+      .setOrigin(0.5)
+      .setVisible(false)
+      .setDepth(UI_DEPTH);
+    this.myHpFill = this.add
+      .rectangle(spawnX - 15, spawnY - 44, 30, 4, 0x3aff6a)
+      .setOrigin(0, 0.5)
       .setVisible(false)
       .setDepth(UI_DEPTH);
 
@@ -306,6 +336,8 @@ export class OfficeScene extends Phaser.Scene {
       this.micMenu = undefined;
       this.callToast?.remove();
       this.callToast = undefined;
+      this.deathOverlay?.remove();
+      this.deathOverlay = undefined;
       if (this.onResizeRef) {
         this.scale.off(Phaser.Scale.Events.RESIZE, this.onResizeRef);
         this.onResizeRef = undefined;
@@ -349,7 +381,7 @@ export class OfficeScene extends Phaser.Scene {
       this.refreshRoster();
     });
     room.onLeave(() => {
-      if (this.leaving || this.room !== room) return;
+      if (this.leaving || this.dead || this.room !== room) return;
       this.handleDisconnect(name, x, y);
     });
     room.onMessage("called", (m: { from: string; name: string; x: number; y: number }) => {
@@ -359,6 +391,9 @@ export class OfficeScene extends Phaser.Scene {
     room.onMessage("fireball", (m: { x: number; y: number; dir: number }) => {
       if (this.room !== room) return;
       if (floorOfY(m.y) === this.currentFloor) this.spawnFireball(m.x, m.y, m.dir);
+    });
+    room.onMessage("died", () => {
+      if (this.room === room) this.onDied();
     });
     this.refreshRoster();
     this.showReconnecting(false);
@@ -371,6 +406,8 @@ export class OfficeScene extends Phaser.Scene {
       r.label.destroy();
       r.ring.destroy();
       r.hand.destroy();
+      r.hpBg.destroy();
+      r.hpFill.destroy();
     });
     this.remotes.clear();
     this.refreshRoster();
@@ -379,7 +416,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private scheduleReconnect(name: string, x: number, y: number) {
-    if (this.leaving || this.room || this.reconnecting) return;
+    if (this.leaving || this.dead || this.room || this.reconnecting) return;
     this.reconnecting = true;
     this.time.delayedCall(3000, async () => {
       this.reconnecting = false;
@@ -423,8 +460,18 @@ export class OfficeScene extends Phaser.Scene {
       .setVisible(false)
       .setDepth(player.y - 1);
     const hand = this.add
-      .text(player.x, player.y - 48, "✋", { fontFamily: "monospace", fontSize: "18px" })
+      .text(player.x, player.y - 60, "✋", { fontFamily: "monospace", fontSize: "18px" })
       .setOrigin(0.5)
+      .setVisible(false)
+      .setDepth(UI_DEPTH);
+    const hpBg = this.add
+      .rectangle(player.x, player.y - 44, 32, 6, 0x000000, 0.6)
+      .setOrigin(0.5)
+      .setVisible(false)
+      .setDepth(UI_DEPTH);
+    const hpFill = this.add
+      .rectangle(player.x - 15, player.y - 44, 30, 4, 0x3aff6a)
+      .setOrigin(0, 0.5)
       .setVisible(false)
       .setDepth(UI_DEPTH);
     // clicar no nome = chamar essa pessoa
@@ -433,8 +480,17 @@ export class OfficeScene extends Phaser.Scene {
     label.on("pointerout", () => label.setColor("#ffe9b0"));
     label.on("pointerdown", () => this.callPlayer(sessionId));
     // remotos sao mundo: a camera do HUD nao deve desenha-los
-    this.uiCam?.ignore([sprite, label, ring, hand]);
-    this.remotes.set(sessionId, { sprite, label, ring, hand });
+    this.uiCam?.ignore([sprite, label, ring, hand, hpBg, hpFill]);
+    this.remotes.set(sessionId, {
+      sprite,
+      label,
+      ring,
+      hand,
+      hpBg,
+      hpFill,
+      hp: typeof player.hp === "number" ? player.hp : 100,
+      dmgAt: 0,
+    });
   }
 
   private removeRemote(sessionId: string) {
@@ -444,6 +500,8 @@ export class OfficeScene extends Phaser.Scene {
       r.label.destroy();
       r.ring.destroy();
       r.hand.destroy();
+      r.hpBg.destroy();
+      r.hpFill.destroy();
       this.remotes.delete(sessionId);
     }
   }
@@ -885,6 +943,7 @@ export class OfficeScene extends Phaser.Scene {
   // ---------- bola de fogo (espaco) ----------
 
   private castFireball() {
+    if (this.dead) return;
     const now = this.time.now;
     if (now - this.lastFire < 500) return; // cooldown
     this.lastFire = now;
@@ -900,12 +959,12 @@ export class OfficeScene extends Phaser.Scene {
     const x = this.player.x;
     const y = this.player.y;
     const dir = this.lastDir;
-    this.spawnFireball(x, y, dir);
+    this.spawnFireball(x, y, dir, true); // fromMe: a minha bola detecta o acerto e reporta o dano
     this.room?.send("fireball", { x: Math.round(x), y: Math.round(y), dir });
   }
 
-  /** Orbe de fogo que voa 5 quadrados na direcao encarada e explode. */
-  private spawnFireball(x: number, y: number, dir: number) {
+  /** Orbe de fogo que voa 5 quadrados na direcao encarada e explode (no 1o alvo, se fromMe). */
+  private spawnFireball(x: number, y: number, dir: number, fromMe = false) {
     const dx = dir === 2 ? -1 : dir === 3 ? 1 : 0;
     const dy = dir === 0 ? 1 : dir === 1 ? -1 : 0;
     const dist = 5 * T;
@@ -930,20 +989,37 @@ export class OfficeScene extends Phaser.Scene {
     this.uiCam?.ignore([glow, orb, core, trail]);
     const tx = x + dx * dist;
     const ty = y + dy * dist;
-    this.tweens.add({
+    let done = false;
+    const finish = (ex: number, ey: number) => {
+      if (done) return;
+      done = true;
+      tween.stop();
+      trail.stop();
+      glow.destroy();
+      orb.destroy();
+      core.destroy();
+      this.time.delayedCall(320, () => trail.destroy());
+      this.explodeAt(ex, ey);
+    };
+    const tween = this.tweens.add({
       targets: [glow, orb, core, trail],
       x: tx,
       y: ty,
       duration: 360,
       ease: "Linear",
-      onComplete: () => {
-        trail.stop();
-        glow.destroy();
-        orb.destroy();
-        core.destroy();
-        this.time.delayedCall(320, () => trail.destroy());
-        this.explodeAt(tx, ty);
+      onUpdate: () => {
+        if (!fromMe || done) return;
+        // quem lancou detecta o acerto (so nos remotos do MESMO andar, que estao visiveis)
+        for (const [sid, r] of this.remotes) {
+          if (!r.sprite.visible) continue;
+          if (Math.hypot(orb.x - r.sprite.x, orb.y - r.sprite.y) < 24) {
+            this.room?.send("hit", { target: sid });
+            finish(orb.x, orb.y);
+            return;
+          }
+        }
       },
+      onComplete: () => finish(tx, ty),
     });
   }
 
@@ -975,6 +1051,59 @@ export class OfficeScene extends Phaser.Scene {
     this.uiCam?.ignore(burst);
     burst.explode(26);
     this.time.delayedCall(650, () => burst.destroy());
+  }
+
+  // ---------- HP / dano / morte ----------
+
+  private updateHpBar(
+    bg: Phaser.GameObjects.Rectangle,
+    fill: Phaser.GameObjects.Rectangle,
+    x: number,
+    y: number,
+    hp: number,
+    dmgAt: number,
+    now: number,
+    baseVis: boolean,
+  ) {
+    const show = baseVis && dmgAt > 0 && now - dmgAt < 60000; // some 1min apos o ultimo dano
+    bg.setVisible(show);
+    fill.setVisible(show);
+    if (!show) return;
+    bg.setPosition(x, y);
+    fill.setPosition(x - 15, y).setScale(Math.max(0, hp) / 100, 1);
+    fill.setFillStyle(hp > 50 ? 0x3aff6a : hp > 20 ? 0xffcc3a : 0xff4a4a);
+  }
+
+  private onDied() {
+    if (this.dead) return;
+    this.dead = true;
+    this.voice.disconnect();
+    try {
+      this.room?.leave();
+    } catch {
+      /* ignore */
+    }
+    this.room = undefined;
+    const ov = document.createElement("div");
+    ov.style.cssText =
+      "position:fixed;inset:0;z-index:10001;display:flex;flex-direction:column;" +
+      "align-items:center;justify-content:center;gap:18px;background:#0a0008ee;" +
+      "color:#fff;font-family:monospace;text-align:center;padding:20px;";
+    const t = document.createElement("div");
+    t.style.cssText = "font-size:44px;";
+    t.textContent = "💀 Você morreu!";
+    const sub = document.createElement("div");
+    sub.style.cssText = "font-size:15px;opacity:.85;";
+    sub.textContent = "Uma bola de fogo te derrubou. Volte com a vida cheia.";
+    const btn = document.createElement("button");
+    btn.textContent = "↻ Voltar ao escritório";
+    btn.style.cssText =
+      "font:16px monospace;cursor:pointer;background:#2a7a3a;color:#fff;border:none;" +
+      "border-radius:10px;padding:12px 22px;";
+    btn.onclick = () => location.reload();
+    ov.append(t, sub, btn);
+    document.body.appendChild(ov);
+    this.deathOverlay = ov;
   }
 
   // ---------- decoracao helpers ----------
@@ -1791,6 +1920,20 @@ export class OfficeScene extends Phaser.Scene {
     // bola de fogo (espaco)
     if (this.fireKey && Phaser.Input.Keyboard.JustDown(this.fireKey)) this.castFireball();
 
+    // minha barra de HP (so aparece quando levo dano)
+    if (this.myHpBg && this.myHpFill) {
+      this.updateHpBar(
+        this.myHpBg,
+        this.myHpFill,
+        this.player.x,
+        this.player.y - 44,
+        this.myHp,
+        this.myDmgAt,
+        this.time.now,
+        true,
+      );
+    }
+
     // envia minha posicao (throttle ~80ms)
     const now = this.time.now;
     if (this.room && now - this.lastSent > 80) {
@@ -1806,6 +1949,12 @@ export class OfficeScene extends Phaser.Scene {
     // atualiza remotos (interpolacao)
     if (this.room) {
       const state = this.room.state as unknown as { players: { get(id: string): any } };
+      // meu HP (detecta dano pra mostrar a barra)
+      const meState = state.players.get(this.sessionId);
+      if (meState && typeof meState.hp === "number") {
+        if (meState.hp < this.myHp) this.myDmgAt = this.time.now;
+        this.myHp = meState.hp;
+      }
       this.remotes.forEach((r, sid) => {
         const p = state.players.get(sid);
         if (!p) return;
@@ -1824,7 +1973,13 @@ export class OfficeScene extends Phaser.Scene {
           .setPosition(r.sprite.x, r.sprite.y + 16)
           .setDepth(r.sprite.y - 1)
           .setVisible(vis && !!speaking && speaking.has(sid));
-        r.hand.setPosition(r.sprite.x, r.sprite.y - 48).setVisible(vis && !!p.handRaised);
+        r.hand.setPosition(r.sprite.x, r.sprite.y - 60).setVisible(vis && !!p.handRaised);
+        // HP do remoto (detecta dano + desenha a barra)
+        if (typeof p.hp === "number") {
+          if (p.hp < r.hp) r.dmgAt = this.time.now;
+          r.hp = p.hp;
+        }
+        this.updateHpBar(r.hpBg, r.hpFill, r.sprite.x, r.sprite.y - 44, r.hp, r.dmgAt, this.time.now, vis);
       });
 
       // se alguem levantou/baixou a mao, atualiza o roster (sem refazer a cada frame)

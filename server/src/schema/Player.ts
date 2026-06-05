@@ -12,4 +12,6 @@ export class Player extends Schema {
   @type("uint8") charId = 0;
   /** maozinha levantada (pedir pra falar) */
   @type("boolean") handRaised = false;
+  /** vida 0..100 — morre em 0 (cada bola de fogo tira 20) */
+  @type("uint8") hp = 100;
 }

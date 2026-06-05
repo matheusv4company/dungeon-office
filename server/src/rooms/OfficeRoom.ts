@@ -59,6 +59,18 @@ export class OfficeRoom extends Room<OfficeState> {
       );
     });
 
+    // "Acerto": quem lancou a bola reporta o alvo. Tira 20%; em 0, manda "died".
+    this.onMessage("hit", (client, msg: { target?: string }) => {
+      const id = String(msg?.target ?? "");
+      if (!id || id === client.sessionId) return;
+      const target = this.state.players.get(id);
+      if (!target || target.hp <= 0) return;
+      target.hp = Math.max(0, target.hp - 20);
+      if (target.hp <= 0) {
+        this.clients.find((c) => c.sessionId === id)?.send("died", {});
+      }
+    });
+
     console.log("[OfficeRoom] sala criada");
   }
 
