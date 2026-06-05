@@ -102,6 +102,10 @@ export class OfficeScene extends Phaser.Scene {
   private localHand?: Phaser.GameObjects.Text;
   private lastHandsSig = "";
 
+  // bola de fogo (espaco) — efeito efemero sincronizado
+  private fireKey?: Phaser.Input.Keyboard.Key;
+  private lastFire = 0;
+
   // camera/zoom — HUD fica numa camera propria pra NAO escalar com o zoom
   private uiCam?: Phaser.Cameras.Scene2D.Camera;
   private hudLayer?: Phaser.GameObjects.Layer;
@@ -153,6 +157,7 @@ export class OfficeScene extends Phaser.Scene {
     this.handRaised = false;
     this.localHand = undefined;
     this.lastHandsSig = "";
+    this.lastFire = 0;
     this.floorObjs = [[], [], []];
     this.currentFloor = 1;
     this.stairs = [];
@@ -271,9 +276,10 @@ export class OfficeScene extends Phaser.Scene {
       D: kb.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     };
     this.handKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.H); // levantar/baixar a mao
+    this.fireKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE); // bola de fogo
 
     const instr = this.add
-      .text(12, 12, "WASD / setas — andar  ·  scroll — zoom  ·  clique num nome — chamar  ·  H — levantar a mão", {
+      .text(12, 12, "WASD/setas — andar · scroll — zoom · clique num nome — chamar · H — mão · espaço — 🔥", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -328,6 +334,11 @@ export class OfficeScene extends Phaser.Scene {
     this.room = room;
     this.sessionId = room.sessionId;
     this.reconnecting = false;
+    // Se a voz ja estava ligada e o sessionId mudou (reconexao), reconecta a voz
+    // com a nova identidade — senao ela "some" pra todos por mismatch de ID.
+    if (this.voice.connected && this.voice.getIdentity() !== room.sessionId) {
+      void this.voice.reconnect(room.sessionId, name).catch(() => {});
+    }
     const $ = getStateCallbacks(room) as (obj: unknown) => any;
     $(room.state).players.onAdd((player: any, sid: string) => {
       if (sid !== room.sessionId) this.addRemote(sid, player);
@@ -344,6 +355,10 @@ export class OfficeScene extends Phaser.Scene {
     room.onMessage("called", (m: { from: string; name: string; x: number; y: number }) => {
       if (this.room !== room) return;
       this.onCalled(m);
+    });
+    room.onMessage("fireball", (m: { x: number; y: number; dir: number }) => {
+      if (this.room !== room) return;
+      if (floorOfY(m.y) === this.currentFloor) this.spawnFireball(m.x, m.y, m.dir);
     });
     this.refreshRoster();
     this.showReconnecting(false);
@@ -865,6 +880,101 @@ export class OfficeScene extends Phaser.Scene {
     } catch {
       /* sem audio disponivel */
     }
+  }
+
+  // ---------- bola de fogo (espaco) ----------
+
+  private castFireball() {
+    const now = this.time.now;
+    if (now - this.lastFire < 500) return; // cooldown
+    this.lastFire = now;
+    // "pulo": esticada rapida do boneco
+    this.tweens.add({
+      targets: this.player,
+      scaleY: 1.22,
+      scaleX: 0.9,
+      duration: 110,
+      yoyo: true,
+      ease: "Quad.out",
+    });
+    const x = this.player.x;
+    const y = this.player.y;
+    const dir = this.lastDir;
+    this.spawnFireball(x, y, dir);
+    this.room?.send("fireball", { x: Math.round(x), y: Math.round(y), dir });
+  }
+
+  /** Orbe de fogo que voa 5 quadrados na direcao encarada e explode. */
+  private spawnFireball(x: number, y: number, dir: number) {
+    const dx = dir === 2 ? -1 : dir === 3 ? 1 : 0;
+    const dy = dir === 0 ? 1 : dir === 1 ? -1 : 0;
+    const dist = 5 * T;
+    const D = 9600; // acima de tudo no mundo (inclusive da escuridao da cripta)
+    const glow = this.add
+      .ellipse(x, y, 34, 34, 0xff6a2a, 0.5)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(D - 1);
+    const orb = this.add.ellipse(x, y, 18, 18, 0xff8a2e).setStrokeStyle(2, 0xffd27a).setDepth(D);
+    const core = this.add.ellipse(x, y, 9, 9, 0xfff3a0).setDepth(D + 1);
+    const trail = this.add
+      .particles(x, y, "flameDot", {
+        speed: 0,
+        scale: { start: 0.5, end: 0 },
+        alpha: { start: 0.8, end: 0 },
+        lifespan: 280,
+        frequency: 18,
+        tint: [0xfff3a0, 0xffb24d, 0xff6a2a],
+        blendMode: "ADD",
+      })
+      .setDepth(D - 2);
+    this.uiCam?.ignore([glow, orb, core, trail]);
+    const tx = x + dx * dist;
+    const ty = y + dy * dist;
+    this.tweens.add({
+      targets: [glow, orb, core, trail],
+      x: tx,
+      y: ty,
+      duration: 360,
+      ease: "Linear",
+      onComplete: () => {
+        trail.stop();
+        glow.destroy();
+        orb.destroy();
+        core.destroy();
+        this.time.delayedCall(320, () => trail.destroy());
+        this.explodeAt(tx, ty);
+      },
+    });
+  }
+
+  private explodeAt(x: number, y: number) {
+    const D = 9600;
+    const ring = this.add.ellipse(x, y, 14, 14, 0x000000, 0).setStrokeStyle(4, 0xffb24d).setDepth(D);
+    this.uiCam?.ignore(ring);
+    this.tweens.add({
+      targets: ring,
+      scaleX: 6,
+      scaleY: 6,
+      alpha: { from: 0.9, to: 0 },
+      duration: 380,
+      ease: "Quad.out",
+      onComplete: () => ring.destroy(),
+    });
+    const burst = this.add
+      .particles(x, y, "flameDot", {
+        speed: { min: 60, max: 190 },
+        angle: { min: 0, max: 360 },
+        scale: { start: 0.7, end: 0 },
+        alpha: { start: 1, end: 0 },
+        lifespan: { min: 280, max: 560 },
+        tint: [0xfff3a0, 0xffb24d, 0xff6a2a],
+        blendMode: "ADD",
+        emitting: false,
+      })
+      .setDepth(D + 1);
+    this.uiCam?.ignore(burst);
+    burst.explode(26);
+    this.time.delayedCall(650, () => burst.destroy());
   }
 
   // ---------- decoracao helpers ----------
@@ -1678,6 +1788,9 @@ export class OfficeScene extends Phaser.Scene {
     if (this.handKey && Phaser.Input.Keyboard.JustDown(this.handKey)) this.toggleHand();
     this.localHand?.setPosition(this.player.x, this.player.y - 48).setVisible(this.handRaised);
 
+    // bola de fogo (espaco)
+    if (this.fireKey && Phaser.Input.Keyboard.JustDown(this.fireKey)) this.castFireball();
+
     // envia minha posicao (throttle ~80ms)
     const now = this.time.now;
     if (this.room && now - this.lastSent > 80) {
@@ -1770,6 +1883,11 @@ export class OfficeScene extends Phaser.Scene {
           this.updateVoiceBtn();
         }
       }
+    } else if (this.voice.connected) {
+      // Sem estado do jogo (reconectando ao Colyseus): NAO congelar os volumes.
+      // Silencia todo mundo ate o jogo voltar — senao a voz de quem estava perto
+      // "vaza" pelo ambiente inteiro durante o blip de reconexao (bug intermitente).
+      this.voice.applyGains(() => 0);
     }
 
     if (this.voiceBtn) this.voiceBtn.setPosition(this.scale.width - 16, 16);

@@ -46,6 +46,19 @@ export class OfficeRoom extends Room<OfficeState> {
       if (p) p.handRaised = !!msg?.raised;
     });
 
+    // "Bola de fogo": efeito efemero — so retransmite pros outros renderizarem.
+    this.onMessage("fireball", (client, msg: { x?: number; y?: number; dir?: number }) => {
+      this.broadcast(
+        "fireball",
+        {
+          x: Number(msg?.x) || 0,
+          y: Number(msg?.y) || 0,
+          dir: clamp(Number(msg?.dir ?? 0) | 0, 0, 3),
+        },
+        { except: client },
+      );
+    });
+
     console.log("[OfficeRoom] sala criada");
   }
 

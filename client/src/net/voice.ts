@@ -43,6 +43,7 @@ export class VoiceManager {
   connected = false;
   micEnabled = false;
   sharing = false;
+  private connectedIdentity?: string; // identidade no LiveKit (= sessionId atual do Colyseus)
 
   async connect(identity: string, displayName: string): Promise<void> {
     if (this.connected) return;
@@ -96,6 +97,17 @@ export class VoiceManager {
     await room.connect(data.url, data.token);
     this.room = room;
     this.connected = true;
+    this.connectedIdentity = identity;
+  }
+
+  getIdentity(): string | undefined {
+    return this.connectedIdentity;
+  }
+
+  /** Reconecta a voz com uma nova identidade (apos o Colyseus trocar o sessionId). */
+  async reconnect(identity: string, displayName: string): Promise<void> {
+    this.disconnect();
+    await this.connect(identity, displayName);
   }
 
   async setMicEnabled(on: boolean): Promise<void> {
