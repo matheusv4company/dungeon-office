@@ -5,7 +5,7 @@ estático (jogo) — tudo na mesma porta/origem. O LiveKit roda na nuvem (separa
 
 ## Pré-requisitos
 - VPS com **Coolify**
-- Domínio (alvo: **dungeon.sparkslab.com.br**)
+- Domínio (alvo: **dungeon.empresa-br.com**)
 - Conta **LiveKit Cloud** (URL + API Key + Secret)
 
 ## 1) DNS
@@ -15,7 +15,7 @@ No painel de DNS do domínio (Hostinger), crie:
 |------|------|-------|-----|
 | A | `dungeon` | `<IP da sua VPS>` | padrão |
 
-→ resolve `dungeon.sparkslab.com.br` para a VPS.
+→ resolve `dungeon.empresa-br.com` para a VPS.
 
 ## 2) Repositório
 Suba este repositório para um Git provider (ex.: GitHub, repo **privado**).
@@ -24,7 +24,7 @@ Suba este repositório para um Git provider (ex.: GitHub, repo **privado**).
 1. **New Resource → Application** → escolha o repositório → branch **main**.
 2. **Build Pack: Dockerfile** (detectado automaticamente — o `Dockerfile` está na raiz).
 3. **Port / Ports Exposes: `2567`**.
-4. **Domains:** `https://dungeon.sparkslab.com.br`
+4. **Domains:** `https://dungeon.empresa-br.com`
    (o Coolify/Traefik emite o certificado HTTPS via Let's Encrypt automaticamente).
 5. **Environment Variables** (cole aqui — **nunca** no código/git):
    ```
@@ -35,7 +35,7 @@ Suba este repositório para um Git provider (ex.: GitHub, repo **privado**).
 6. **Deploy.**
 
 ## 4) Testar
-Abra **https://dungeon.sparkslab.com.br** → escolha personagem + nome → ande (WASD)
+Abra **https://dungeon.empresa-br.com** → escolha personagem + nome → ande (WASD)
 → clique em **🎙️ Ativar voz** (permita o microfone).
 
 ## Notas
