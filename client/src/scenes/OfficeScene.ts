@@ -1509,19 +1509,9 @@ export class OfficeScene extends Phaser.Scene {
   private addStaircase(col: number, row: number, up: boolean, label: string, tcol: number, trow: number) {
     const x = col * T + T / 2;
     const y = row * T + T / 2;
-    const base = up ? 0x9a8a6a : 0x3a3550;
-    const edge = up ? 0x6a5a3a : 0x1f1b2c;
-    this.add.rectangle(x, y, T + 10, T + 14, base).setStrokeStyle(2, edge).setDepth(y - 2);
-    for (let i = 0; i < 4; i++) {
-      const sy = up ? y + 9 - i * 6 : y - 9 + i * 6;
-      this.add.rectangle(x, sy, T - 6 - i * 4, 5, i % 2 ? edge : 0xece3c8).setDepth(y - 1);
-    }
+    this.add.image(x, y, up ? "stairs_up" : "stairs_down").setScale(1.5).setDepth(y);
     this.add
-      .text(x, y - 1, up ? "▲" : "▼", { fontFamily: "monospace", fontSize: "15px", color: "#ffffff" })
-      .setOrigin(0.5)
-      .setDepth(y);
-    this.add
-      .text(x, y + 24, label, {
+      .text(x, y + 26, label, {
         fontFamily: "monospace",
         fontSize: "10px",
         color: "#fff7d8",
@@ -1529,7 +1519,7 @@ export class OfficeScene extends Phaser.Scene {
         padding: { x: 4, y: 1 },
       })
       .setOrigin(0.5)
-      .setDepth(y);
+      .setDepth(9700); // placa sempre visivel (acima da escuridao da cripta)
     this.stairs.push({
       x1: (col - 1) * T,
       y1: row * T - 4,

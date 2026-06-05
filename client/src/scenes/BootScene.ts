@@ -70,6 +70,8 @@ export class BootScene extends Phaser.Scene {
     ];
     MON.forEach((n) => this.load.image("m_" + n, `assets/dungeon/mon/${n}.png`));
     this.load.image("altar_death", "assets/dungeon/altar/kikubaaqudgha.png");
+    this.load.image("stairs_up", "assets/dungeon/gateways/stone_stairs_up.png");
+    this.load.image("stairs_down", "assets/dungeon/gateways/stone_stairs_down.png");
 
     // Personagens (LPC, CC-BY-SA) — sheets 9x4 de 64px (caminhada nas 4 direcoes)
     CHARACTERS.forEach((c) =>
