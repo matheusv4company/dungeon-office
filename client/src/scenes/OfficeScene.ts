@@ -191,9 +191,8 @@ export class OfficeScene extends Phaser.Scene {
     this.makeFlameTexture();
     this.makeLightTexture("lightBig", 300);
     this.makeLightTexture("lightSmall", 190);
-    this.makeSandTexture();
     this.buildFloorInto(0, () => {
-      this.add.tileSprite(0, 0, W, OY * T, "sandTile").setOrigin(0).setDepth(0);
+      this.add.tileSprite(0, 0, W, OY * T, "sand1").setOrigin(0).setDepth(0);
       this.buildBeach();
     });
     this.buildFloorInto(1, () => {
@@ -202,7 +201,7 @@ export class OfficeScene extends Phaser.Scene {
       this.buildOfficeDecor(OY);
     });
     this.buildFloorInto(2, () => {
-      this.add.rectangle(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T, 0x0b0913).setOrigin(0).setDepth(0);
+      this.add.tileSprite(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T, "crypt0").setOrigin(0).setDepth(0);
       this.buildCrypt();
     });
 
@@ -981,22 +980,6 @@ export class OfficeScene extends Phaser.Scene {
     g.destroy();
   }
 
-  /** Areia texturizada (tile 64px com pontinhos claros/escuros). */
-  private makeSandTexture() {
-    if (this.textures.exists("sandTile")) return;
-    const g = this.make.graphics({ x: 0, y: 0 }, false);
-    g.fillStyle(0xead49a, 1);
-    g.fillRect(0, 0, 64, 64);
-    for (let i = 0; i < 80; i++) {
-      const x = Math.random() * 64;
-      const y = Math.random() * 64;
-      g.fillStyle(Math.random() < 0.5 ? 0xf4dfac : 0xd8bf82, 0.55);
-      g.fillCircle(x, y, Math.random() * 1.4 + 0.4);
-    }
-    g.generateTexture("sandTile", 64, 64);
-    g.destroy();
-  }
-
   // ---------- andar: escritorio (deslocado por oy) ----------
 
   private buildOfficeDecor(oy: number) {
@@ -1077,32 +1060,28 @@ export class OfficeScene extends Phaser.Scene {
   private buildBeach() {
     const oceanTop = 1 * T;
     const oceanH = 3.5 * T;
-    // agua em gradiente (fundo profundo -> orla clara)
-    const bands = [0x1d72a8, 0x2493cb, 0x3bb1df, 0x63cde9];
-    const bandH = oceanH / bands.length;
-    for (let i = 0; i < bands.length; i++) {
-      this.add.rectangle(0, oceanTop + i * bandH, W, bandH + 1, bands[i]).setOrigin(0).setDepth(0.3);
-    }
+    // agua DCSS animada (profunda no topo, rasa na orla; frames alternam)
+    const deepH = 2 * T;
+    const deep = this.add.tileSprite(0, oceanTop, W, deepH, "water_deep").setOrigin(0).setDepth(0.3);
+    const shallow = this.add
+      .tileSprite(0, oceanTop + deepH, W, oceanH - deepH, "water_shallow")
+      .setOrigin(0)
+      .setDepth(0.3);
+    let wf = 0;
+    this.time.addEvent({
+      delay: 520,
+      loop: true,
+      callback: () => {
+        wf ^= 1;
+        deep.setTexture(wf ? "water_deep2" : "water_deep");
+        shallow.setTexture(wf ? "water_shallow2" : "water_shallow");
+      },
+    });
     // reflexo do sol na agua
     this.add
-      .ellipse(W - 4 * T, oceanTop + oceanH * 0.55, 6.5 * T, oceanH * 0.8, 0xffffff, 0.16)
+      .ellipse(W - 4 * T, oceanTop + oceanH * 0.55, 6.5 * T, oceanH * 0.8, 0xffffff, 0.14)
       .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(0.31);
-    // ondas animadas
-    for (let i = 0; i < 4; i++) {
-      const wave = this.add
-        .rectangle(W / 2, oceanTop + (i * 0.85 + 0.5) * T, W - 30, 2, 0xffffff, 0.35)
-        .setDepth(0.32);
-      this.tweens.add({
-        targets: wave,
-        x: { from: W / 2 - 14, to: W / 2 + 14 },
-        alpha: { from: 0.12, to: 0.42 },
-        duration: 1400 + i * 300,
-        yoyo: true,
-        repeat: -1,
-        ease: "Sine.inOut",
-      });
-    }
+      .setDepth(0.32);
     // cintilancia do sol na agua
     this.add
       .particles(0, 0, "flameDot", {
@@ -1125,6 +1104,14 @@ export class OfficeScene extends Phaser.Scene {
     this.obstacles.push(sea);
 
     this.addSun(W - 4 * T, 2.6 * T);
+
+    // variacao na areia (manchas de outros tiles)
+    const sandVar = ["sand2", "sand3", "sand4"];
+    for (let i = 0; i < 18; i++) {
+      const c = 1 + Math.floor(Math.random() * (COLS - 2));
+      const rr = 5 + Math.floor(Math.random() * (OY - 6));
+      this.add.image(c * T + T / 2, rr * T + T / 2, sandVar[i % 3]).setDepth(0.05);
+    }
 
     const palms: Array<[number, number]> = [
       [3, 7],
@@ -1299,41 +1286,51 @@ export class OfficeScene extends Phaser.Scene {
   // ---------- andar: cripta amaldicoada (baixo) ----------
 
   private buildCrypt() {
-    const top = CRYPT_Y0 * T;
     const cy = CRYPT_Y0;
-    const ch = (ROWS - CRYPT_Y0) * T;
-    this.add.rectangle(0, top, W, ch, 0x05040a, 0.45).setOrigin(0).setDepth(0.2);
+    const top = cy * T;
+    const ch = (ROWS - cy) * T;
+    // bruma + brilhos amaldicoados
+    this.add.rectangle(0, top, W, ch, 0x05040a, 0.4).setOrigin(0).setDepth(0.2);
     for (const [gx, gy, gc] of [
       [6, 4, 0x1f8a4a],
       [23, 7, 0x5a2a8a],
       [14, 13, 0x2a5a8a],
     ] as Array<[number, number, number]>) {
       this.add
-        .ellipse(gx * T, top + gy * T, 190, 130, gc, 0.16)
+        .ellipse(gx * T, top + gy * T, 200, 140, gc, 0.14)
         .setBlendMode(Phaser.BlendModes.ADD)
         .setDepth(0.25);
     }
-    this.addDeadDragon(15 * T, top + 9 * T);
-    const skulls: Array<[number, number]> = [
-      [3, cy + 3],
-      [8, cy + 6],
-      [26, cy + 4],
-      [5, cy + 12],
-      [24, cy + 13],
-      [19, cy + 3],
-      [11, cy + 15],
-    ];
-    for (const [c, rr] of skulls) this.addSkull(c, rr);
+    // pentagramas (marcacoes de ritual no chao)
+    this.addPentagram(9 * T, top + 7 * T, 46);
+    this.addPentagram(23 * T, top + 12 * T, 40);
+    // ritual: altar do deus da morte + dragao esqueletico (centro)
+    this.addMon("altar_death", 9, cy + 7, 1.7);
+    this.addMon("m_bone_dragon", 15, cy + 9, 2.6);
+    // liches, esqueletos, mumia e carrasco
+    this.addMon("m_lich", 7, cy + 6, 1.4);
+    this.addMon("m_ancient_lich", 11, cy + 6, 1.4);
+    this.addMon("m_skeletal_warrior", 21, cy + 12, 1.4);
+    this.addMon("m_mummy", 25, cy + 12, 1.4);
+    this.addMon("m_skeletal_warrior", 12, cy + 15, 1.3);
+    this.addMon("m_executioner", 27, cy + 15, 1.5);
+    // ceifador
+    this.addMon("m_reaper", 24, cy + 5, 1.8);
+    // caveiras flutuantes
+    this.addMon("m_curse_skull", 5, cy + 11, 1.2, true);
+    this.addMon("m_laughing_skull", 27, cy + 4, 1.2, true);
+    this.addMon("m_curse_skull", 18, cy + 3, 1.1, true);
+    // fantasmas que pairam
+    this.addMon("m_wraith", 8, cy + 4, 1.4, true);
+    this.addMon("m_phantom", 22, cy + 10, 1.4, true);
+    this.addMon("m_eidolon", 14, cy + 4, 1.4, true);
+    // lapides + ossos
     this.addTombstone(4, cy + 5);
-    this.addTombstone(25, cy + 9);
-    this.addTombstone(8, cy + 14);
-    this.addBonePile(20, cy + 12);
-    this.addBonePile(10, cy + 8);
-    this.addProp(4, cy + 2, "statue_dragon");
-    this.addProp(26, cy + 15, "statue_dragon");
-    this.addSpirit(8 * T, top + 5 * T);
-    this.addSpirit(22 * T, top + 11 * T);
-    this.addSpirit(15 * T, top + 4 * T);
+    this.addTombstone(28, cy + 9);
+    this.addTombstone(8, cy + 16);
+    this.addBonePile(20, cy + 13);
+    this.addBonePile(11, cy + 9);
+    // tochas + braseiros verdes (fontes de luz)
     this.addTorch(0, cy + 4, FLAME_GREEN);
     this.addTorch(COLS - 1, cy + 4, FLAME_GREEN);
     this.addTorch(0, cy + 12, FLAME_GREEN);
@@ -1341,20 +1338,10 @@ export class OfficeScene extends Phaser.Scene {
     this.addBrazier(11, ROWS - 3, FLAME_GREEN);
     this.addBrazier(19, ROWS - 3, FLAME_GREEN);
 
-    // culto sombrio: pentagramas no chao, cultistas encapuzados e ceifador
-    const cty = CRYPT_Y0 * T;
-    this.addPentagram(9 * T, cty + 7 * T, 44);
-    this.addCultist(6.5 * T, cty + 7 * T);
-    this.addCultist(11.5 * T, cty + 7 * T);
-    this.addPentagram(23 * T, cty + 13 * T, 38);
-    this.addCultist(20 * T, cty + 13 * T);
-    this.addReaper(24 * T, cty + 6 * T);
+    this.addRoomLabel("💀 Cripta Amaldiçoada", 7 * T, (cy + 2) * T);
+    this.addStaircase(16, cy + 2, true, "▲ Escritório", 16, 32);
 
-    this.addRoomLabel("💀 Cripta Amaldiçoada", 8 * T, (CRYPT_Y0 + 2) * T);
-    // chega ACIMA da escada de descida (linha 34) pra nao reativar ao subir segurando ↑
-    this.addStaircase(16, CRYPT_Y0 + 2, true, "▲ Escritório", 16, 32);
-
-    // luzes (tochas/braseiros) que o sistema de escuridao vai revelar
+    // luzes (tochas/braseiros) que o sistema de escuridao revela
     const lt = (c: number, r: number) => {
       const x =
         c === 0
@@ -1364,108 +1351,30 @@ export class OfficeScene extends Phaser.Scene {
             : c * T + T / 2;
       this.cryptLights.push({ x, y: r * T + T / 2 });
     };
-    lt(0, CRYPT_Y0 + 4);
-    lt(COLS - 1, CRYPT_Y0 + 4);
-    lt(0, CRYPT_Y0 + 12);
-    lt(COLS - 1, CRYPT_Y0 + 12);
+    lt(0, cy + 4);
+    lt(COLS - 1, cy + 4);
+    lt(0, cy + 12);
+    lt(COLS - 1, cy + 12);
     this.cryptLights.push({ x: 11 * T + T / 2, y: (ROWS - 3) * T + T / 2 });
     this.cryptLights.push({ x: 19 * T + T / 2, y: (ROWS - 3) * T + T / 2 });
-    // overlay de escuridao (recalculado a cada frame quando voce esta na cripta)
     this.darkRT = this.add.renderTexture(0, 0, W, H).setOrigin(0).setDepth(9500);
   }
 
-  private addSkull(c: number, r: number) {
+  /** Coloca um sprite DCSS (monstro/altar) num tile, com leve flutuacao opcional. */
+  private addMon(key: string, c: number, r: number, scale: number, float = false) {
     const x = c * T + T / 2;
     const y = r * T + T / 2;
-    const d = y;
-    this.add.ellipse(x, y, 18, 19, 0xd8d2c0).setStrokeStyle(1, 0x8a8470).setDepth(d);
-    this.add.ellipse(x - 4, y - 1, 5, 6, 0x12100a).setDepth(d + 0.1);
-    this.add.ellipse(x + 4, y - 1, 5, 6, 0x12100a).setDepth(d + 0.1);
-    this.add.ellipse(x, y + 3, 2.5, 3, 0x12100a).setDepth(d + 0.1);
-    this.add.rectangle(x, y + 8, 12, 5, 0xd8d2c0).setStrokeStyle(1, 0x8a8470).setDepth(d);
-    for (let i = -2; i <= 2; i++) {
-      this.add.rectangle(x + i * 3, y + 8, 1.4, 4, 0x8a8470).setDepth(d + 0.1);
+    const s = this.add.image(x, y, key).setScale(scale).setDepth(y + 8);
+    if (float) {
+      this.tweens.add({
+        targets: s,
+        y: { from: y - 5, to: y + 5 },
+        duration: 1500 + ((c * 7) % 5) * 160,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.inOut",
+      });
     }
-  }
-
-  private addDeadDragon(x: number, y: number) {
-    const bone = 0xcfc8b4;
-    const dk = 0x8a8470;
-    const d = y;
-    const spine: Array<[number, number]> = [];
-    for (let i = 0; i < 12; i++) {
-      const sx = x - 92 + i * 16;
-      const sy = y + Math.sin(i * 0.5) * 10;
-      spine.push([sx, sy]);
-      this.add.ellipse(sx, sy, 12, 9, bone).setStrokeStyle(1, dk).setDepth(d);
-    }
-    for (let i = 2; i < 9; i++) {
-      const [sx, sy] = spine[i];
-      this.add.ellipse(sx, sy + 17, 8, 36, 0x000000, 0).setStrokeStyle(2, bone).setDepth(d - 0.1);
-    }
-    const [hx, hy] = spine[0];
-    this.add.ellipse(hx - 16, hy, 40, 26, bone).setStrokeStyle(2, dk).setDepth(d + 0.2);
-    this.add.ellipse(hx - 34, hy + 2, 20, 12, bone).setStrokeStyle(1, dk).setDepth(d + 0.2);
-    this.add.rectangle(hx - 26, hy - 14, 4, 18, bone).setStrokeStyle(1, dk).setAngle(28).setDepth(d + 0.2);
-    this.add.rectangle(hx - 18, hy - 15, 4, 20, bone).setStrokeStyle(1, dk).setAngle(12).setDepth(d + 0.2);
-    this.add.ellipse(hx - 20, hy - 1, 8, 9, 0x7a1f1f).setDepth(d + 0.3);
-    this.add
-      .ellipse(hx - 20, hy - 1, 16, 17, 0xff3a3a, 0.16)
-      .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(d + 0.3);
-    const [wx, wy] = spine[5];
-    for (let i = 0; i < 4; i++) {
-      this.add
-        .rectangle(wx + i * 10, wy - 30, 4, 64 - i * 6, bone)
-        .setStrokeStyle(1, dk)
-        .setAngle(-30 + i * 16)
-        .setDepth(d - 0.2);
-    }
-    const [tx, ty] = spine[11];
-    for (let i = 0; i < 5; i++) {
-      this.add
-        .ellipse(tx + 12 + i * 11, ty + i * 5, 9 - i, 6 - i * 0.6, bone)
-        .setStrokeStyle(1, dk)
-        .setDepth(d);
-    }
-  }
-
-  private addSpirit(x: number, y: number) {
-    const d = ROWS * T + 100; // flutuam acima de tudo
-    const glow = this.add
-      .ellipse(x, y, 46, 56, 0x4affa0, 0.18)
-      .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(d);
-    const body = this.add
-      .ellipse(x, y, 26, 34, 0xbfead8, 0.42)
-      .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(d);
-    const e1 = this.add.ellipse(x - 5, y - 4, 4, 7, 0x0a3a24, 0.85).setDepth(d + 0.1);
-    const e2 = this.add.ellipse(x + 5, y - 4, 4, 7, 0x0a3a24, 0.85).setDepth(d + 0.1);
-    const t1 = this.add
-      .ellipse(x - 6, y + 15, 8, 12, 0xbfead8, 0.3)
-      .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(d);
-    const t2 = this.add
-      .ellipse(x + 5, y + 15, 8, 12, 0xbfead8, 0.3)
-      .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(d);
-    this.tweens.add({
-      targets: [glow, body, e1, e2, t1, t2],
-      y: "+=14",
-      duration: 1900,
-      yoyo: true,
-      repeat: -1,
-      ease: "Sine.inOut",
-    });
-    this.tweens.add({
-      targets: [glow, body],
-      alpha: { from: 0.22, to: 0.5 },
-      duration: 1300,
-      yoyo: true,
-      repeat: -1,
-      ease: "Sine.inOut",
-    });
   }
 
   private addTombstone(c: number, r: number) {
@@ -1518,47 +1427,6 @@ export class OfficeScene extends Phaser.Scene {
     g.moveTo(pts[order[0]][0], pts[order[0]][1]);
     for (let i = 1; i < order.length; i++) g.lineTo(pts[order[i]][0], pts[order[i]][1]);
     g.strokePath();
-  }
-
-  private addCultist(x: number, y: number) {
-    const d = y;
-    const robe = 0x17141f;
-    const trim = 0x3a2a4a;
-    this.add.ellipse(x, y + 20, 30, 16, robe).setDepth(d); // barra do manto
-    this.add.rectangle(x, y + 6, 26, 36, robe).setStrokeStyle(1, trim).setDepth(d);
-    this.add.ellipse(x, y - 6, 30, 16, robe).setDepth(d); // ombros
-    this.add.ellipse(x, y - 16, 22, 23, robe).setDepth(d + 0.1); // capuz
-    this.add.ellipse(x, y - 14, 11, 14, 0xcfc8b4).setDepth(d + 0.2); // caveira de passaro
-    this.add.ellipse(x - 3, y - 16, 2.6, 3.4, 0x12100a).setDepth(d + 0.3);
-    this.add.ellipse(x + 3, y - 16, 2.6, 3.4, 0x12100a).setDepth(d + 0.3);
-    this.add.triangle(x, y - 8, 0, 0, -2, 9, 2, 9, 0xb8b09a).setDepth(d + 0.3); // bico
-    this.add.rectangle(x - 8, y - 25, 2.6, 11, 0xcfc8b4).setAngle(-28).setDepth(d + 0.15); // chifre
-    this.add.rectangle(x + 8, y - 25, 2.6, 11, 0xcfc8b4).setAngle(28).setDepth(d + 0.15);
-    this.add.ellipse(x, y + 4, 10, 10, 0x000000, 0).setStrokeStyle(1, 0xb02a44).setDepth(d + 0.2); // pentagrama no peito
-    this.add.ellipse(x, y + 4, 3, 3, 0xb02a44).setDepth(d + 0.3);
-  }
-
-  private addReaper(x: number, y: number) {
-    const d = y;
-    const robe = 0x0e0c14;
-    this.add.ellipse(x, y + 24, 36, 18, robe).setDepth(d);
-    this.add.rectangle(x, y + 4, 32, 46, robe).setStrokeStyle(1, 0x2a2636).setDepth(d);
-    this.add.ellipse(x, y - 10, 32, 18, robe).setDepth(d); // ombros
-    this.add.ellipse(x, y - 24, 25, 27, robe).setDepth(d + 0.1); // capuz
-    this.add.ellipse(x, y - 22, 17, 21, 0x05040a).setDepth(d + 0.15); // vazio
-    this.add.ellipse(x, y - 22, 12, 14, 0xcfc8b4).setDepth(d + 0.2); // caveira
-    this.add.ellipse(x, y - 17, 8, 4, 0xcfc8b4).setDepth(d + 0.2); // mandibula
-    this.add.ellipse(x - 3, y - 23, 3, 4, 0x7a1f1f).setDepth(d + 0.3); // olhos
-    this.add.ellipse(x + 3, y - 23, 3, 4, 0x7a1f1f).setDepth(d + 0.3);
-    this.add
-      .ellipse(x, y - 23, 20, 20, 0xff2a2a, 0.13)
-      .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(d + 0.25);
-    this.add.rectangle(x + 24, y - 4, 4, 74, 0x4a3420).setAngle(7).setDepth(d + 0.1); // cabo
-    this.add
-      .triangle(x + 30, y - 40, 0, 0, 30, -6, 6, 16, 0xc2c7cf)
-      .setStrokeStyle(1, 0x6a6e76)
-      .setDepth(d + 0.2); // lamina
   }
 
   // ---------- andares: camadas, camera e escadas ----------

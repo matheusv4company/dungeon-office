@@ -47,6 +47,30 @@ export class BootScene extends Phaser.Scene {
     this.load.image("statue_angel", "assets/dungeon/decor/statue_angel.png");
     this.load.image("fountain", "assets/dungeon/decor/fountain.png");
 
+    // Cripta + praia (DCSS, CC0): chao, agua, monstros, altar
+    ["crypt0", "crypt1", "crypt2", "crypt3", "sand1", "sand2", "sand3", "sand4"].forEach((n) =>
+      this.load.image(n, `assets/dungeon/floor/${n}.png`),
+    );
+    ["deep", "deep2", "shallow", "shallow2"].forEach((n) =>
+      this.load.image("water_" + n, `assets/dungeon/water/${n === "deep" ? "deep_water" : n === "deep2" ? "deep_water2" : n === "shallow" ? "shallow_water" : "shallow_water2"}.png`),
+    );
+    const MON = [
+      "bone_dragon",
+      "lich",
+      "ancient_lich",
+      "skeletal_warrior",
+      "wraith",
+      "phantom",
+      "eidolon",
+      "curse_skull",
+      "laughing_skull",
+      "mummy",
+      "reaper",
+      "executioner",
+    ];
+    MON.forEach((n) => this.load.image("m_" + n, `assets/dungeon/mon/${n}.png`));
+    this.load.image("altar_death", "assets/dungeon/altar/kikubaaqudgha.png");
+
     // Personagens (LPC, CC-BY-SA) — sheets 9x4 de 64px (caminhada nas 4 direcoes)
     CHARACTERS.forEach((c) =>
       this.load.spritesheet(charKey(c.index), `assets/chars/char${c.index}.png`, {
