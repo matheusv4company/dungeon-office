@@ -96,12 +96,17 @@ export class OfficeScene extends Phaser.Scene {
   private callToast?: HTMLDivElement;
   private onResizeRef?: (g: Phaser.Structs.Size) => void;
 
-  // andares (0=praia, 1=escritorio, 2=cripta) — so o atual fica visivel
-  private floorLayer: Phaser.GameObjects.Layer[] = [];
+  // andares (0=praia, 1=escritorio, 2=cripta) — so o atual fica visivel.
+  // Objetos ficam na lista da cena (nao em Layers) pra preservar o y-sort global.
+  private floorObjs: Phaser.GameObjects.GameObject[][] = [];
   private currentFloor = 1;
   private stairs: Array<{ x1: number; y1: number; x2: number; y2: number; tx: number; ty: number }> = [];
   private stairLatch = false;
   private floorCdUntil = 0;
+
+  // escuridao da cripta: overlay quase preto com "buracos" de luz (tochas + player)
+  private darkRT?: Phaser.GameObjects.RenderTexture;
+  private cryptLights: Array<{ x: number; y: number }> = [];
 
   constructor() {
     super("office");
@@ -131,11 +136,13 @@ export class OfficeScene extends Phaser.Scene {
     this.localRing = undefined;
     this.meetingBadge = undefined;
     this.reconnectBadge = undefined;
-    this.floorLayer = [];
+    this.floorObjs = [[], [], []];
     this.currentFloor = 1;
     this.stairs = [];
     this.stairLatch = false;
     this.floorCdUntil = 0;
+    this.darkRT = undefined;
+    this.cryptLights = [];
 
     // ---- grade de colisao (andares isolados; divisorias SEM passagem) ----
     const solid: boolean[][] = Array.from({ length: ROWS }, () =>
@@ -159,8 +166,8 @@ export class OfficeScene extends Phaser.Scene {
     for (let c = 1; c <= 9; c++) set(c, OY + 7);
     set(4, OY + 7, false);
 
-    // ---- camadas por andar (ligam/desligam inteiras) ----
-    this.floorLayer = [this.add.layer(), this.add.layer(), this.add.layer()];
+    // ---- objetos por andar (visibilidade alternada; tudo na lista da cena) ----
+    this.floorObjs = [[], [], []];
 
     // ---- paredes: fisica unica (sempre colide) + visual em cada andar ----
     const walls = this.physics.add.staticGroup();
@@ -173,7 +180,7 @@ export class OfficeScene extends Phaser.Scene {
         const fr = r < OY ? 0 : r <= DIV2 ? 1 : 2;
         if (fr === 0) w.setTint(0xcdb98a);
         else if (fr === 2) w.setTint(0x4a4660);
-        this.floorLayer[fr].add(w);
+        this.floorObjs[fr].push(w);
       }
     }
     // copias visuais das divisorias, pra aparecerem tambem do andar vizinho
@@ -182,8 +189,11 @@ export class OfficeScene extends Phaser.Scene {
 
     // ---- fundo + decoracao de cada andar (capturado na sua camada) ----
     this.makeFlameTexture();
+    this.makeLightTexture("lightBig", 300);
+    this.makeLightTexture("lightSmall", 190);
+    this.makeSandTexture();
     this.buildFloorInto(0, () => {
-      this.add.rectangle(0, 0, W, OY * T, 0xe7d29a).setOrigin(0).setDepth(0);
+      this.add.tileSprite(0, 0, W, OY * T, "sandTile").setOrigin(0).setDepth(0);
       this.buildBeach();
     });
     this.buildFloorInto(1, () => {
@@ -955,6 +965,38 @@ export class OfficeScene extends Phaser.Scene {
     g.destroy();
   }
 
+  /** Textura radial branca (centro solido -> borda transparente) usada como "luz". */
+  private makeLightTexture(key: string, size: number) {
+    if (this.textures.exists(key)) return;
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+    const R = size / 2;
+    const steps = 16;
+    for (let i = steps; i >= 1; i--) {
+      g.fillStyle(0xffffff, 0.11);
+      g.fillCircle(R, R, (i / steps) * R);
+    }
+    g.fillStyle(0xffffff, 1);
+    g.fillCircle(R, R, R * 0.5); // nucleo solido revela bem o centro
+    g.generateTexture(key, size, size);
+    g.destroy();
+  }
+
+  /** Areia texturizada (tile 64px com pontinhos claros/escuros). */
+  private makeSandTexture() {
+    if (this.textures.exists("sandTile")) return;
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+    g.fillStyle(0xead49a, 1);
+    g.fillRect(0, 0, 64, 64);
+    for (let i = 0; i < 80; i++) {
+      const x = Math.random() * 64;
+      const y = Math.random() * 64;
+      g.fillStyle(Math.random() < 0.5 ? 0xf4dfac : 0xd8bf82, 0.55);
+      g.fillCircle(x, y, Math.random() * 1.4 + 0.4);
+    }
+    g.generateTexture("sandTile", 64, 64);
+    g.destroy();
+  }
+
   // ---------- andar: escritorio (deslocado por oy) ----------
 
   private buildOfficeDecor(oy: number) {
@@ -1034,24 +1076,50 @@ export class OfficeScene extends Phaser.Scene {
 
   private buildBeach() {
     const oceanTop = 1 * T;
-    const oceanH = 3 * T;
-    this.add.rectangle(0, oceanTop, W, oceanH, 0x2aa7d8).setOrigin(0).setDepth(0.3);
-    this.add.rectangle(0, oceanTop, W, oceanH, 0x8fe0f2, 0.22).setOrigin(0).setDepth(0.31);
-    for (let i = 0; i < 3; i++) {
+    const oceanH = 3.5 * T;
+    // agua em gradiente (fundo profundo -> orla clara)
+    const bands = [0x1d72a8, 0x2493cb, 0x3bb1df, 0x63cde9];
+    const bandH = oceanH / bands.length;
+    for (let i = 0; i < bands.length; i++) {
+      this.add.rectangle(0, oceanTop + i * bandH, W, bandH + 1, bands[i]).setOrigin(0).setDepth(0.3);
+    }
+    // reflexo do sol na agua
+    this.add
+      .ellipse(W - 4 * T, oceanTop + oceanH * 0.55, 6.5 * T, oceanH * 0.8, 0xffffff, 0.16)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(0.31);
+    // ondas animadas
+    for (let i = 0; i < 4; i++) {
       const wave = this.add
-        .rectangle(W / 2, oceanTop + (i + 0.6) * T, W - 24, 3, 0xffffff, 0.4)
+        .rectangle(W / 2, oceanTop + (i * 0.85 + 0.5) * T, W - 30, 2, 0xffffff, 0.35)
         .setDepth(0.32);
       this.tweens.add({
         targets: wave,
-        x: { from: W / 2 - 12, to: W / 2 + 12 },
-        alpha: { from: 0.2, to: 0.5 },
-        duration: 1500 + i * 350,
+        x: { from: W / 2 - 14, to: W / 2 + 14 },
+        alpha: { from: 0.12, to: 0.42 },
+        duration: 1400 + i * 300,
         yoyo: true,
         repeat: -1,
         ease: "Sine.inOut",
       });
     }
-    this.add.rectangle(0, oceanTop + oceanH, W, 6, 0xffffff, 0.6).setOrigin(0).setDepth(0.33);
+    // cintilancia do sol na agua
+    this.add
+      .particles(0, 0, "flameDot", {
+        x: { min: 0, max: W },
+        y: { min: oceanTop + 6, max: oceanTop + oceanH - 8 },
+        scale: { start: 0.2, end: 0 },
+        alpha: { start: 0.9, end: 0 },
+        lifespan: 1100,
+        frequency: 90,
+        quantity: 1,
+        tint: 0xffffff,
+        blendMode: "ADD",
+      })
+      .setDepth(0.34);
+    // espuma da orla
+    this.add.rectangle(0, oceanTop + oceanH, W, 7, 0xffffff, 0.6).setOrigin(0).setDepth(0.35);
+    // colisao: nao entra no mar
     const sea = this.add.rectangle(W / 2, oceanTop + oceanH / 2, W, oceanH, 0x000000, 0).setDepth(0);
     this.physics.add.existing(sea, true);
     this.obstacles.push(sea);
@@ -1081,8 +1149,30 @@ export class OfficeScene extends Phaser.Scene {
     ];
     for (const [c, r] of stars) this.addStarfish(c, r);
 
-    // luz quente do dia
-    this.add.rectangle(0, 0, W, OY * T, 0xfff0bf, 0.05).setOrigin(0).setDepth(0.95);
+    // glints de sol flutuando pela areia (vida/movimento)
+    this.add
+      .particles(0, 0, "flameDot", {
+        x: { min: T, max: W - T },
+        y: { min: oceanTop + oceanH, max: OY * T - T / 2 },
+        speedY: { min: -12, max: -4 },
+        speedX: { min: -5, max: 5 },
+        scale: { start: 0.13, end: 0 },
+        alpha: { start: 0.75, end: 0 },
+        lifespan: 2400,
+        frequency: 200,
+        quantity: 1,
+        tint: [0xfff6c8, 0xffffff],
+        blendMode: "ADD",
+      })
+      .setDepth(0.9);
+    // luz quente do dia (gradiente: mais forte no topo, perto do sol)
+    for (let i = 0; i < 4; i++) {
+      this.add
+        .rectangle(0, (i * OY * T) / 4, W, (OY * T) / 4 + 1, 0xfff2c0, 0.08 - i * 0.017)
+        .setOrigin(0)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setDepth(0.95);
+    }
 
     this.addRoomLabel("☀️ Praia ensolarada", 15 * T, 8 * T);
     this.addStaircase(16, 14, false, "▼ Escritório", 16, 20); // desce pro escritorio
@@ -1131,10 +1221,18 @@ export class OfficeScene extends Phaser.Scene {
     const angs = [-150, -110, -70, -30, 20, 60];
     for (let i = 0; i < angs.length; i++) {
       const a = (angs[i] * Math.PI) / 180;
-      this.add
+      const frond = this.add
         .ellipse(topx + Math.cos(a) * 18, topy + Math.sin(a) * 18, 42, 13, frondCols[i % 3])
         .setAngle(angs[i])
         .setDepth(base + 1);
+      this.tweens.add({
+        targets: frond,
+        angle: { from: angs[i] - 3, to: angs[i] + 3 },
+        duration: 1800 + i * 120,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.inOut",
+      });
     }
     this.add.ellipse(topx - 4, topy + 5, 9, 9, 0x6b4a2a).setStrokeStyle(1, 0x3a2614).setDepth(base + 2);
     this.add.ellipse(topx + 6, topy + 6, 9, 9, 0x6b4a2a).setStrokeStyle(1, 0x3a2614).setDepth(base + 2);
@@ -1255,6 +1353,25 @@ export class OfficeScene extends Phaser.Scene {
     this.addRoomLabel("💀 Cripta Amaldiçoada", 8 * T, (CRYPT_Y0 + 2) * T);
     // chega ACIMA da escada de descida (linha 34) pra nao reativar ao subir segurando ↑
     this.addStaircase(16, CRYPT_Y0 + 2, true, "▲ Escritório", 16, 32);
+
+    // luzes (tochas/braseiros) que o sistema de escuridao vai revelar
+    const lt = (c: number, r: number) => {
+      const x =
+        c === 0
+          ? T * 0.5 + T * 0.6
+          : c === COLS - 1
+            ? (COLS - 1) * T + T / 2 - T * 0.6
+            : c * T + T / 2;
+      this.cryptLights.push({ x, y: r * T + T / 2 });
+    };
+    lt(0, CRYPT_Y0 + 4);
+    lt(COLS - 1, CRYPT_Y0 + 4);
+    lt(0, CRYPT_Y0 + 12);
+    lt(COLS - 1, CRYPT_Y0 + 12);
+    this.cryptLights.push({ x: 11 * T + T / 2, y: (ROWS - 3) * T + T / 2 });
+    this.cryptLights.push({ x: 19 * T + T / 2, y: (ROWS - 3) * T + T / 2 });
+    // overlay de escuridao (recalculado a cada frame quando voce esta na cripta)
+    this.darkRT = this.add.renderTexture(0, 0, W, H).setOrigin(0).setDepth(9500);
   }
 
   private addSkull(c: number, r: number) {
@@ -1446,11 +1563,11 @@ export class OfficeScene extends Phaser.Scene {
 
   // ---------- andares: camadas, camera e escadas ----------
 
-  /** Executa fn e joga tudo que ela criar na camada do andar f. */
+  /** Executa fn e marca tudo que ela criar como pertencente ao andar f. */
   private buildFloorInto(f: number, fn: () => void) {
     const before = this.children.list.length;
     fn();
-    this.floorLayer[f].add(this.children.list.slice(before));
+    for (const o of this.children.list.slice(before)) this.floorObjs[f].push(o);
   }
 
   /** Copia visual de uma divisoria pra ela aparecer tambem do andar vizinho. */
@@ -1459,13 +1576,18 @@ export class OfficeScene extends Phaser.Scene {
       if (!solid[row][c]) continue;
       const key = (row * 7 + c) % 4 === 0 ? "wall2" : "wall";
       const img = this.add.image(c * T + T / 2, row * T + T / 2, key).setTint(tint).setDepth(1);
-      this.floorLayer[floor].add(img);
+      this.floorObjs[floor].push(img);
     }
   }
 
   /** Mostra so o andar f e trava a camera (com cor de fundo) nele. */
   private applyFloor(f: number) {
-    for (let i = 0; i < this.floorLayer.length; i++) this.floorLayer[i].setVisible(i === f);
+    for (let i = 0; i < this.floorObjs.length; i++) {
+      const vis = i === f;
+      for (const o of this.floorObjs[i]) {
+        (o as unknown as { setVisible(v: boolean): void }).setVisible(vis);
+      }
+    }
     const cam = this.cameras.main;
     if (f === 0) {
       cam.setBounds(0, 0, W, OY * T);
@@ -1689,5 +1811,19 @@ export class OfficeScene extends Phaser.Scene {
       this.updateShareBtn();
     }
     if (this.room && this.reconnectBadge) this.showReconnecting(false);
+
+    // escuridao da cripta: quase tudo preto, revelando so ao redor das luzes
+    if (this.currentFloor === 2 && this.darkRT) {
+      const rt = this.darkRT;
+      rt.clear();
+      rt.fill(0x020109, 0.96);
+      rt.erase("lightBig", this.player.x - 150, this.player.y - 150);
+      for (const L of this.cryptLights) rt.erase("lightSmall", L.x - 95, L.y - 95);
+      this.remotes.forEach((r, sid) => {
+        const p = (this.room?.state as unknown as { players: { get(id: string): any } } | undefined)
+          ?.players.get(sid);
+        if (p && floorOfY(p.y) === 2) rt.erase("lightSmall", r.sprite.x - 95, r.sprite.y - 95);
+      });
+    }
   }
 }
