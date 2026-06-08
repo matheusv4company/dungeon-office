@@ -624,10 +624,11 @@ export class OfficeScene extends Phaser.Scene {
 
   private refreshRoster() {
     const state = this.room?.state as unknown as
-      | { players: { forEach(cb: (p: any, id: string) => void): void } }
+      | { players?: { forEach(cb: (p: any, id: string) => void): void } }
       | undefined;
     const players: Array<{ id: string; name: string; hand: boolean }> = [];
-    if (state) {
+    // `state.players` pode ainda nao existir logo apos entrar (1o sync nao chegou).
+    if (state?.players) {
       state.players.forEach((p: any, id: string) => {
         const hand = id === this.sessionId ? this.handRaised : !!p.handRaised;
         players.push({ id, name: String(p.name), hand });
@@ -1948,15 +1949,21 @@ export class OfficeScene extends Phaser.Scene {
 
     // atualiza remotos (interpolacao)
     if (this.room) {
-      const state = this.room.state as unknown as { players: { get(id: string): any } };
+      // ATENCAO: logo apos entrar/reconectar, `this.room` ja existe mas
+      // `state.players` ainda pode ser undefined por alguns frames ate o 1o sync
+      // chegar (a janela e ~0 em localhost, mas varios frames com latencia de
+      // rede). Por isso TODO acesso a `state.players` usa `?.` — sem isso, um
+      // `state.players.get(...)` lancava a cada frame e CONGELAVA o jogo (parecia
+      // "nao da pra andar" pra quem estava online de verdade).
+      const state = this.room.state as unknown as { players?: { get(id: string): any } };
       // meu HP (detecta dano pra mostrar a barra)
-      const meState = state.players.get(this.sessionId);
+      const meState = state.players?.get(this.sessionId);
       if (meState && typeof meState.hp === "number") {
         if (meState.hp < this.myHp) this.myDmgAt = this.time.now;
         this.myHp = meState.hp;
       }
       this.remotes.forEach((r, sid) => {
-        const p = state.players.get(sid);
+        const p = state.players?.get(sid);
         if (!p) return;
         const vis = floorOfY(p.y) === this.currentFloor; // so vejo quem esta no meu andar
         r.sprite.x += (p.x - r.sprite.x) * 0.25;
@@ -1985,7 +1992,7 @@ export class OfficeScene extends Phaser.Scene {
       // se alguem levantou/baixou a mao, atualiza o roster (sem refazer a cada frame)
       let handsSig = this.handRaised ? "me," : "";
       this.remotes.forEach((_r, sid) => {
-        const p = state.players.get(sid);
+        const p = state.players?.get(sid);
         if (p?.handRaised) handsSig += sid + ",";
       });
       if (handsSig !== this.lastHandsSig) {
@@ -1999,7 +2006,7 @@ export class OfficeScene extends Phaser.Scene {
       this.updateMeetingBadge(myZone >= 0);
       if (this.voice.connected) {
         this.voice.applyGains((id) => {
-          const p = state.players.get(id);
+          const p = state.players?.get(id);
           if (!p) return 0;
           if (floorOfY(p.y) !== this.currentFloor) return 0; // andar diferente: mudo
           const tz = zoneAt(p.x, p.y);
@@ -2010,7 +2017,7 @@ export class OfficeScene extends Phaser.Scene {
         });
         // tela compartilhada: visivel so pra quem esta na MESMA sala de reuniao
         this.voice.applyShareVisibility((id) => {
-          const sp = state.players.get(id);
+          const sp = state.players?.get(id);
           if (!sp) return false;
           if (floorOfY(sp.y) !== this.currentFloor) return false;
           const sz = zoneAt(sp.x, sp.y);
@@ -2021,7 +2028,7 @@ export class OfficeScene extends Phaser.Scene {
         let audible = false;
         this.remotes.forEach((_r, sid) => {
           if (audible) return;
-          const sp = state.players.get(sid);
+          const sp = state.players?.get(sid);
           if (!sp) return;
           if (floorOfY(sp.y) !== this.currentFloor) return;
           const sz = zoneAt(sp.x, sp.y);
@@ -2063,8 +2070,8 @@ export class OfficeScene extends Phaser.Scene {
       rt.erase("lightBig", this.player.x - 150, this.player.y - 150);
       for (const L of this.cryptLights) rt.erase("lightSmall", L.x - 95, L.y - 95);
       this.remotes.forEach((r, sid) => {
-        const p = (this.room?.state as unknown as { players: { get(id: string): any } } | undefined)
-          ?.players.get(sid);
+        const p = (this.room?.state as unknown as { players?: { get(id: string): any } } | undefined)
+          ?.players?.get(sid);
         if (p && floorOfY(p.y) === 2) rt.erase("lightSmall", r.sprite.x - 95, r.sprite.y - 95);
       });
     }
