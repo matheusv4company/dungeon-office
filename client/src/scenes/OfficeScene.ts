@@ -2015,13 +2015,16 @@ export class OfficeScene extends Phaser.Scene {
           const t = Math.max(0, Math.min(1, (VOICE_MAX - d) / (VOICE_MAX - VOICE_FULL)));
           return t * t; // queda quadratica
         });
-        // tela compartilhada: visivel so pra quem esta na MESMA sala de reuniao
+        // tela compartilhada: mesma logica do audio de proximidade —
+        // dentro de uma sala de reuniao so vejo telas da MESMA sala; fora dela,
+        // vejo a tela de quem estiver perto (mesma distancia do audio: VOICE_MAX).
         this.voice.applyShareVisibility((id) => {
           const sp = state.players?.get(id);
           if (!sp) return false;
-          if (floorOfY(sp.y) !== this.currentFloor) return false;
+          if (floorOfY(sp.y) !== this.currentFloor) return false; // andar diferente: nao vejo
           const sz = zoneAt(sp.x, sp.y);
-          return sz >= 0 && sz === myZone;
+          if (myZone >= 0 || sz >= 0) return myZone >= 0 && myZone === sz; // sala: so a mesma sala
+          return Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX; // fora: por proximidade
         });
 
         // auto-mute por privacidade: so transmite se alguem pode te ouvir
