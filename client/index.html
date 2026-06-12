@@ -2,13 +2,24 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
     <title>Escritório Virtual</title>
     <style>
-      html, body { margin: 0; padding: 0; height: 100%; background: #1b1b2a; overflow: hidden; }
-      #game { width: 100vw; height: 100vh; }
+      html, body {
+        margin: 0; padding: 0; height: 100%; background: #1b1b2a; overflow: hidden;
+        /* mobile: evita seleção/zoom/scroll da PÁGINA — os gestos vão pro jogo */
+        overscroll-behavior: none;
+        touch-action: none;
+        -webkit-user-select: none; user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      /* 100dvh acompanha a barra do navegador no celular (fallback 100vh) */
+      #game { width: 100vw; height: 100vh; height: 100dvh; }
       * { box-sizing: border-box; }
-      canvas { display: block; }
+      canvas { display: block; touch-action: none; }
     </style>
   </head>
   <body>

@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { CHARACTERS, FRAME, charKey, loadSelection, saveSelection } from "../characters";
 
-/** Tela inicial: escolher 1 de 10 personagens + digitar o nome. */
+/** Tela inicial: escolher 1 de 10 personagens + digitar o nome. Layout responsivo. */
 export class CharacterSelectScene extends Phaser.Scene {
   private selected = 0;
   private highlight!: Phaser.GameObjects.Rectangle;
@@ -15,12 +15,14 @@ export class CharacterSelectScene extends Phaser.Scene {
   create() {
     const W = this.scale.width;
     const H = this.scale.height;
+    const isPhone = W < 640; // celular em retrato
     this.cameras.main.setBackgroundColor("#15131d");
 
+    const titleY = isPhone ? 26 : 40;
     this.add
-      .text(W / 2, 40, "Escolha seu personagem", {
+      .text(W / 2, titleY, "Escolha seu personagem", {
         fontFamily: "monospace",
-        fontSize: "26px",
+        fontSize: isPhone ? "18px" : "26px",
         color: "#f0e6c8",
       })
       .setOrigin(0.5);
@@ -28,14 +30,20 @@ export class CharacterSelectScene extends Phaser.Scene {
     const saved = loadSelection();
     this.selected = saved.index;
 
-    const cols = 5;
-    const cellW = 134;
-    const cellH = 164;
+    // grade responsiva: cabe na largura E na altura disponível.
+    const cols = isPhone ? 3 : 5;
+    const rows = Math.ceil(CHARACTERS.length / cols);
+    const gridTop = titleY + (isPhone ? 30 : 58);
+    const bottomReserved = 168; // espaço pro "Seu nome" + input + botão
+    const cellW = Math.min(134, (W - 24) / cols);
+    const cellH = Math.min(164, Math.max(96, (H - bottomReserved - gridTop) / rows));
+    const spriteScale = Math.max(1, Math.min(1.8, cellH / 92));
+    const nameDY = cellH * 0.34;
     const startX = W / 2 - (cols * cellW) / 2 + cellW / 2;
-    const startY = 138;
+    const startY = gridTop + cellH / 2;
 
     this.highlight = this.add
-      .rectangle(0, 0, 104, 128, 0xffd36b, 0.12)
+      .rectangle(0, 0, Math.max(72, 58 * spriteScale), cellH * 0.84, 0xffd36b, 0.12)
       .setStrokeStyle(3, 0xffd36b)
       .setVisible(false)
       .setDepth(0);
@@ -48,19 +56,19 @@ export class CharacterSelectScene extends Phaser.Scene {
       this.positions[i] = { x, y };
 
       const img = this.add
-        .image(x, y, charKey(i), FRAME.downIdle)
-        .setScale(1.8)
+        .image(x, y - cellH * 0.08, charKey(i), FRAME.downIdle)
+        .setScale(spriteScale)
         .setDepth(1)
         .setInteractive({ useHandCursor: true });
-      img.on("pointerover", () => img.setScale(1.95));
-      img.on("pointerout", () => img.setScale(1.8));
+      img.on("pointerover", () => img.setScale(spriteScale * 1.08));
+      img.on("pointerout", () => img.setScale(spriteScale));
       img.on("pointerdown", () => this.select(i));
 
-      // nome ABAIXO do sprite, com folga
+      // nome ABAIXO do sprite
       this.add
-        .text(x, y + 62, c.name, {
+        .text(x, y + nameDY, c.name, {
           fontFamily: "monospace",
-          fontSize: "12px",
+          fontSize: isPhone ? "10px" : "12px",
           color: "#cfc7b0",
           align: "center",
         })
@@ -79,8 +87,9 @@ export class CharacterSelectScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
+    const inputW = Math.min(300, W - 40);
     const style =
-      "width:300px;padding:11px 12px;font-family:monospace;font-size:16px;" +
+      `width:${inputW}px;padding:11px 12px;font-family:monospace;font-size:16px;` +
       "border-radius:8px;border:2px solid #5a4a2a;background:#221c12;color:#f0e6c8;" +
       "text-align:center;outline:none;box-sizing:border-box;";
     const dom = this.add.dom(W / 2, H - 112, "input", style);
@@ -115,7 +124,7 @@ export class CharacterSelectScene extends Phaser.Scene {
   private select(i: number) {
     this.selected = i;
     const p = this.positions[i];
-    if (p) this.highlight.setPosition(p.x, p.y + 6).setVisible(true);
+    if (p) this.highlight.setPosition(p.x, p.y).setVisible(true);
   }
 
   private enter() {

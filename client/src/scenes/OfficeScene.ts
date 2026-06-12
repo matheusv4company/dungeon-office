@@ -110,6 +110,16 @@ export class OfficeScene extends Phaser.Scene {
   private fireKey?: Phaser.Input.Keyboard.Key;
   private lastFire = 0;
 
+  // ---- controles de toque (mobile) ----
+  private isTouch = false;
+  private joyBase?: Phaser.GameObjects.Arc;
+  private joyThumb?: Phaser.GameObjects.Arc;
+  private joyVec = { x: 0, y: 0 }; // direção analógica do joystick (-1..1)
+  private joyId = -1; // pointer.id que controla o joystick (-1 = nenhum)
+  private joyR = 56; // raio da base do joystick
+  private fireBtn?: Phaser.GameObjects.Text;
+  private pinchPrev = 0; // distância anterior entre 2 dedos (pinça)
+
   // HP / dano / morte
   private dead = false;
   private myHpBg?: Phaser.GameObjects.Rectangle;
@@ -170,6 +180,12 @@ export class OfficeScene extends Phaser.Scene {
     this.localHand = undefined;
     this.lastHandsSig = "";
     this.lastFire = 0;
+    this.joyVec = { x: 0, y: 0 };
+    this.joyId = -1;
+    this.joyBase = undefined;
+    this.joyThumb = undefined;
+    this.fireBtn = undefined;
+    this.pinchPrev = 0;
     this.dead = false;
     this.myHp = 100;
     this.myDmgAt = 0;
@@ -308,10 +324,15 @@ export class OfficeScene extends Phaser.Scene {
     this.handKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.H); // levantar/baixar a mao
     this.fireKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE); // bola de fogo
 
+    // celular/tablet (ponteiro grosso) → habilita controles de toque
+    this.isTouch = window.matchMedia("(pointer: coarse)").matches;
+    const hint = this.isTouch
+      ? "Arraste no canto ⬋ pra andar  ·  🔥 atira  ·  toque num nome — chamar"
+      : "WASD/setas — andar · scroll — zoom · clique num nome — chamar · H — mão · espaço — 🔥";
     const instr = this.add
-      .text(12, 12, "WASD/setas — andar · scroll — zoom · clique num nome — chamar · H — mão · espaço — 🔥", {
+      .text(12, 12, hint, {
         fontFamily: "monospace",
-        fontSize: "14px",
+        fontSize: this.isTouch ? "11px" : "14px",
         color: "#ffffff",
         backgroundColor: "#000000aa",
         padding: { x: 8, y: 5 },
@@ -321,6 +342,7 @@ export class OfficeScene extends Phaser.Scene {
 
     // ---- HUD em camera propria + zoom no scroll ----
     this.setupUiCameraAndZoom([instr]);
+    this.setupTouchControls(); // joystick + botão de fogo (só no toque)
 
     // ---- multiplayer ----
     void this.connectMultiplayer(sel.name || "Convidado", spawnX, spawnY);
@@ -734,6 +756,98 @@ export class OfficeScene extends Phaser.Scene {
 
     this.onResizeRef = (g: Phaser.Structs.Size) => ui.setSize(g.width, g.height);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.onResizeRef);
+  }
+
+  // ---------- controles de toque (joystick + fogo + pinça) ----------
+
+  private setupTouchControls() {
+    if (!this.isTouch) return;
+    this.input.addPointer(2); // multitouch: joystick + 2o dedo (pinça)
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const r = this.joyR;
+
+    this.joyBase = this.add
+      .circle(22 + r, H - 22 - r, r, 0xffffff, 0.1)
+      .setStrokeStyle(2, 0xffffff, 0.35)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH)
+      .setVisible(false);
+    this.joyThumb = this.add
+      .circle(22 + r, H - 22 - r, r * 0.44, 0xffd36b, 0.5)
+      .setStrokeStyle(2, 0xffd36b, 0.9)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH + 1)
+      .setVisible(false);
+    this.hudLayer?.add(this.joyBase);
+    this.hudLayer?.add(this.joyThumb);
+
+    // botão de fogo (substitui o ESPAÇO no celular)
+    this.fireBtn = this.add
+      .text(W - 22, H - 22, "🔥", { fontSize: "40px" })
+      .setOrigin(1, 1)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH + 1)
+      .setInteractive({ useHandCursor: true });
+    this.hudLayer?.add(this.fireBtn);
+    this.fireBtn.on(
+      "pointerdown",
+      (_p: Phaser.Input.Pointer, _x: number, _y: number, ev?: Phaser.Types.Input.EventData) => {
+        ev?.stopPropagation();
+        this.castFireball();
+      },
+    );
+
+    this.input.on("pointerdown", this.onTouchDown, this);
+    this.input.on("pointermove", this.onTouchMove, this);
+    this.input.on("pointerup", this.onTouchUp, this);
+    this.input.on("pointerupoutside", this.onTouchUp, this);
+  }
+
+  private onTouchDown(p: Phaser.Input.Pointer) {
+    // só ativa o joystick no canto inferior-esquerdo (longe dos botões/roster/fogo)
+    if (this.joyId !== -1 || !this.joyBase) return;
+    if (p.x > this.scale.width * 0.55 || p.y < this.scale.height * 0.4) return;
+    this.joyId = p.id;
+    this.joyBase.setPosition(p.x, p.y).setVisible(true);
+    this.joyThumb?.setPosition(p.x, p.y).setVisible(true);
+  }
+
+  private onTouchMove(p: Phaser.Input.Pointer) {
+    if (p.id !== this.joyId || !this.joyBase) return;
+    const dx = p.x - this.joyBase.x;
+    const dy = p.y - this.joyBase.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const clamped = Math.min(d, this.joyR);
+    const nx = dx / d;
+    const ny = dy / d;
+    this.joyThumb?.setPosition(this.joyBase.x + nx * clamped, this.joyBase.y + ny * clamped);
+    this.joyVec = { x: (nx * clamped) / this.joyR, y: (ny * clamped) / this.joyR };
+  }
+
+  private onTouchUp(p: Phaser.Input.Pointer) {
+    if (p.id !== this.joyId) return;
+    this.joyId = -1;
+    this.joyVec = { x: 0, y: 0 };
+    this.joyBase?.setVisible(false);
+    this.joyThumb?.setVisible(false);
+  }
+
+  /** Pinça de 2 dedos = zoom (equivalente ao scroll no desktop). */
+  private handlePinch() {
+    const pts = [this.input.pointer1, this.input.pointer2].filter(
+      (p) => p && p.isDown && p.id !== this.joyId,
+    );
+    if (pts.length < 2) {
+      this.pinchPrev = 0;
+      return;
+    }
+    const dist = Phaser.Math.Distance.Between(pts[0].x, pts[0].y, pts[1].x, pts[1].y);
+    if (this.pinchPrev > 0 && dist > 0) {
+      const cam = this.cameras.main;
+      cam.setZoom(Phaser.Math.Clamp((cam.zoom * dist) / this.pinchPrev, 0.6, 2.2));
+    }
+    this.pinchPrev = dist;
   }
 
   // ---------- selecao de microfone ----------
@@ -1869,10 +1983,13 @@ export class OfficeScene extends Phaser.Scene {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setVelocity(0);
 
-    const left = this.cursors.left.isDown || this.keys.A.isDown;
-    const right = this.cursors.right.isDown || this.keys.D.isDown;
-    const up = this.cursors.up.isDown || this.keys.W.isDown;
-    const down = this.cursors.down.isDown || this.keys.S.isDown;
+    const jx = this.joyVec.x;
+    const jy = this.joyVec.y;
+    const J = 0.28; // zona morta do joystick
+    const left = this.cursors.left.isDown || this.keys.A.isDown || jx < -J;
+    const right = this.cursors.right.isDown || this.keys.D.isDown || jx > J;
+    const up = this.cursors.up.isDown || this.keys.W.isDown || jy < -J;
+    const down = this.cursors.down.isDown || this.keys.S.isDown || jy > J;
 
     if (left) body.setVelocityX(-SPEED);
     else if (right) body.setVelocityX(SPEED);
@@ -2059,6 +2176,8 @@ export class OfficeScene extends Phaser.Scene {
     if (this.shareBtn) this.shareBtn.setPosition(this.scale.width - 16, 52);
     if (this.micBtn) this.micBtn.setPosition(this.scale.width - 16, 88);
     if (this.handBtn) this.handBtn.setPosition(this.scale.width - 16, 124);
+    if (this.fireBtn) this.fireBtn.setPosition(this.scale.width - 22, this.scale.height - 22);
+    if (this.isTouch) this.handlePinch();
     if (this.voice.sharing !== this.lastSharing) {
       this.lastSharing = this.voice.sharing;
       this.updateShareBtn();
