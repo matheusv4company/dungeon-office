@@ -1,22 +1,32 @@
 # LiveKit self-hosted para o Escritório Virtual.
-# Deploy no Coolify como "Docker Compose" (ou `docker compose up -d` direto na VPS).
+# Deploy no Coolify como "Docker Compose" (a partir do repo, /livekit/docker-compose.yml).
 #
-# - Sinalização WS (7880): o Coolify/Traefik aponta o domínio livekit.empresa-br.com
-#   pra cá e emite o SSL (wss). NÃO precisa abrir 7880 no firewall externo.
-# - Mídia WebRTC: UDP 50000 (mux) + TCP 7881 (fallback) — Traefik NÃO faz UDP, então
-#   essas saem direto no host. ABRIR no firewall da VPS: 50000/udp e 7881/tcp.
+# A config vai EMBUTIDA via --config-body (sem arquivo montado — o bind-mount de
+# arquivo único falha no Coolify e o LiveKit acusa "is a directory").
+#
+# - Sinalização WS (7880): o Coolify/Traefik aponta livekit.empresa-br.com pra cá
+#   e emite o SSL (wss). NÃO precisa abrir 7880 no firewall.
+# - Mídia WebRTC: UDP 50000 (mux) + TCP 7881 — saem no host (Traefik não faz UDP).
+#   ABRIR no firewall da VPS: 50000/udp e 7881/tcp.
 services:
   livekit:
-    image: livekit/livekit-server:latest # depois pinar numa versão (ex.: v1.8.4)
-    command: --config /etc/livekit/livekit.yaml
+    image: livekit/livekit-server:latest # depois pinar (ex.: v1.8.4)
     restart: unless-stopped
     environment:
-      # No Coolify, defina LIVEKIT_KEYS = "APIb5e9cd388757: <SECRET>" (sem aspas no painel).
+      # No Coolify: LIVEKIT_KEYS = "APIb5e9cd388757: <SECRET>"
       - LIVEKIT_KEYS=${LIVEKIT_KEYS}
-    volumes:
-      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+    command:
+      - "--config-body"
+      - |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 50000
+          use_external_ip: true
+        logging:
+          level: info
     expose:
-      - "7880" # WS/HTTP — o Traefik do Coolify alcança por aqui (rede interna) e põe o SSL
+      - "7880" # WS/HTTP — Traefik alcança por aqui (rede interna) e põe o SSL
     ports:
-      - "7881:7881" # fallback TCP de mídia (sai no host — Traefik não faz isso)
-      - "50000:50000/udp" # mídia WebRTC (UDP mux) — sai no host
+      - "7881:7881" # fallback TCP de mídia (host)
+      - "50000:50000/udp" # mídia WebRTC UDP mux (host)
