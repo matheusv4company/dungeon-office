@@ -1,0 +1,11 @@
+# Config do LiveKit self-hosted — SEM segredos.
+# As chaves vêm do env LIVEKIT_KEYS no Coolify (formato: "APIxxx: secret").
+port: 7880
+rtc:
+  tcp_port: 7881
+  udp_port: 50000 # porta UDP única (mux) — só essa precisa abrir no firewall p/ mídia
+  use_external_ip: true # anuncia o IP público da VPS nas ICE candidates
+  # Se o auto-detect do IP falhar (alguns provedores), descomente e fixe:
+  # node_ip: 147.79.104.128
+logging:
+  level: info

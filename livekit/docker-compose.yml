@@ -1,0 +1,22 @@
+# LiveKit self-hosted para o Escritório Virtual.
+# Deploy no Coolify como "Docker Compose" (ou `docker compose up -d` direto na VPS).
+#
+# - Sinalização WS (7880): o Coolify/Traefik aponta o domínio livekit.empresa-br.com
+#   pra cá e emite o SSL (wss). NÃO precisa abrir 7880 no firewall externo.
+# - Mídia WebRTC: UDP 50000 (mux) + TCP 7881 (fallback) — Traefik NÃO faz UDP, então
+#   essas saem direto no host. ABRIR no firewall da VPS: 50000/udp e 7881/tcp.
+services:
+  livekit:
+    image: livekit/livekit-server:latest # depois pinar numa versão (ex.: v1.8.4)
+    command: --config /etc/livekit/livekit.yaml
+    restart: unless-stopped
+    environment:
+      # No Coolify, defina LIVEKIT_KEYS = "APIb5e9cd388757: <SECRET>" (sem aspas no painel).
+      - LIVEKIT_KEYS=${LIVEKIT_KEYS}
+    volumes:
+      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+    expose:
+      - "7880" # WS/HTTP — o Traefik do Coolify alcança por aqui (rede interna) e põe o SSL
+    ports:
+      - "7881:7881" # fallback TCP de mídia (sai no host — Traefik não faz isso)
+      - "50000:50000/udp" # mídia WebRTC (UDP mux) — sai no host
