@@ -119,6 +119,7 @@ export class OfficeScene extends Phaser.Scene {
   private joyR = 56; // raio da base do joystick
   private fireBtn?: Phaser.GameObjects.Text;
   private pinchPrev = 0; // distância anterior entre 2 dedos (pinça)
+  private voiceBgTimer?: ReturnType<typeof setInterval>; // recalcula proximidade com a aba oculta
 
   // HP / dano / morte
   private dead = false;
@@ -186,6 +187,8 @@ export class OfficeScene extends Phaser.Scene {
     this.joyThumb = undefined;
     this.fireBtn = undefined;
     this.pinchPrev = 0;
+    if (this.voiceBgTimer) clearInterval(this.voiceBgTimer);
+    this.voiceBgTimer = undefined;
     this.dead = false;
     this.myHp = 100;
     this.myDmgAt = 0;
@@ -360,6 +363,8 @@ export class OfficeScene extends Phaser.Scene {
       this.callToast = undefined;
       this.deathOverlay?.remove();
       this.deathOverlay = undefined;
+      if (this.voiceBgTimer) clearInterval(this.voiceBgTimer);
+      this.voiceBgTimer = undefined;
       if (this.onResizeRef) {
         this.scale.off(Phaser.Scale.Events.RESIZE, this.onResizeRef);
         this.onResizeRef = undefined;
@@ -370,6 +375,15 @@ export class OfficeScene extends Phaser.Scene {
         /* ignore */
       }
     });
+
+    // Mantem a proximidade da voz viva mesmo com a aba em 2o plano: o loop do
+    // jogo (RAF) congela quando oculto, mas este timer continua e recalcula
+    // ~1x/s usando as posicoes que chegam pelo WebSocket — mata o vazamento
+    // sem precisar mutar quem esta perto. No 1o plano o update() ja cuida.
+    this.voiceBgTimer = setInterval(() => {
+      if (document.hidden) this.recomputeVoiceProximity();
+    }, 700);
+
     try {
       const room = await joinOffice({ name, charId: this.charIndex, x, y });
       this.setupVoiceButton();
@@ -1979,6 +1993,31 @@ export class OfficeScene extends Phaser.Scene {
     });
   }
 
+  /**
+   * Recalcula o volume por proximidade de cada faixa de voz. Roda no loop (1o
+   * plano) E num timer enquanto a aba esta oculta. As posicoes continuam
+   * chegando pelo WebSocket mesmo com a aba em 2o plano (so o requestAnimationFrame
+   * congela), entao da pra atenuar quem se afasta (sem vazar) e manter quem esta
+   * perto audivel — sem precisar mutar tudo.
+   */
+  private recomputeVoiceProximity() {
+    if (!this.voice.connected || !this.room) return;
+    const state = this.room.state as unknown as { players?: { get(id: string): any } };
+    if (!state.players) return;
+    const self = { x: this.player.x, y: this.player.y };
+    const myZone = zoneAt(self.x, self.y);
+    this.voice.applyGains((id) => {
+      const p = state.players?.get(id);
+      if (!p) return 0;
+      if (floorOfY(p.y) !== this.currentFloor) return 0;
+      const tz = zoneAt(p.x, p.y);
+      if (myZone >= 0 || tz >= 0) return myZone >= 0 && myZone === tz ? 1 : 0;
+      const d = Math.hypot(p.x - self.x, p.y - self.y);
+      const t = Math.max(0, Math.min(1, (VOICE_MAX - d) / (VOICE_MAX - VOICE_FULL)));
+      return t * t;
+    });
+  }
+
   update() {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setVelocity(0);
@@ -2122,16 +2161,7 @@ export class OfficeScene extends Phaser.Scene {
       const myZone = zoneAt(self.x, self.y);
       this.updateMeetingBadge(myZone >= 0);
       if (this.voice.connected) {
-        this.voice.applyGains((id) => {
-          const p = state.players?.get(id);
-          if (!p) return 0;
-          if (floorOfY(p.y) !== this.currentFloor) return 0; // andar diferente: mudo
-          const tz = zoneAt(p.x, p.y);
-          if (myZone >= 0 || tz >= 0) return myZone >= 0 && myZone === tz ? 1 : 0;
-          const d = Math.hypot(p.x - self.x, p.y - self.y);
-          const t = Math.max(0, Math.min(1, (VOICE_MAX - d) / (VOICE_MAX - VOICE_FULL)));
-          return t * t; // queda quadratica
-        });
+        this.recomputeVoiceProximity();
         // tela compartilhada: mesma logica do audio de proximidade —
         // dentro de uma sala de reuniao so vejo telas da MESMA sala; fora dela,
         // vejo a tela de quem estiver perto (mesma distancia do audio: VOICE_MAX).

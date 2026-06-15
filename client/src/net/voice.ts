@@ -45,16 +45,6 @@ export class VoiceManager {
   sharing = false;
   private connectedIdentity?: string; // identidade no LiveKit (= sessionId atual do Colyseus)
 
-  // VAZAMENTO: com a aba em 2o plano o navegador congela o requestAnimationFrame,
-  // entao o loop do jogo (applyGains/proximidade) PARA, mas os <audio> do LiveKit
-  // continuam tocando no ULTIMO volume -> voce segue ouvindo quem estava perto
-  // mesmo apos todos se afastarem. O evento de visibilidade dispara mesmo com o
-  // loop parado: enquanto oculto, silencia tudo que entra. Ao voltar, o loop
-  // retoma e o applyGains reaplica a proximidade normalmente.
-  private onVisibility = () => {
-    if (document.hidden) this.tracks.forEach((t) => t.setVolume(0));
-  };
-
   async connect(identity: string, displayName: string): Promise<void> {
     if (this.connected) return;
     const resp = await fetch(
@@ -108,8 +98,6 @@ export class VoiceManager {
     this.room = room;
     this.connected = true;
     this.connectedIdentity = identity;
-    document.addEventListener("visibilitychange", this.onVisibility);
-    if (document.hidden) this.onVisibility(); // ja entrou com a aba oculta
   }
 
   getIdentity(): string | undefined {
@@ -211,7 +199,6 @@ export class VoiceManager {
   }
 
   disconnect(): void {
-    document.removeEventListener("visibilitychange", this.onVisibility);
     try {
       this.room?.disconnect();
     } catch {
