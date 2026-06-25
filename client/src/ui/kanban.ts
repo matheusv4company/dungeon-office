@@ -672,7 +672,10 @@ export class KanbanBoard {
         const label = isClient ? "cliente" : "membro";
         const name = window.prompt(`Nome do novo ${label}:`, "")?.trim();
         if (name) {
-          this.room.send(addMsg, { name, color: autoHex(name) }); // registra na lista persistente
+          // registra so se for novo — nao sobrescreve a cor escolhida de um existente
+          if (!this.knownValues(field).includes(name)) {
+            this.room.send(addMsg, { name, color: autoHex(name) });
+          }
           fill(name);
         } else {
           fill(sel.dataset.prev ?? "");
@@ -806,7 +809,10 @@ export class KanbanBoard {
     add.onclick = () => {
       const name = window.prompt(`Nome do novo ${noun}:`, "")?.trim();
       if (name) {
-        this.room.send(setColorMsg, { name, color: autoHex(name) });
+        // so registra se for novo — nao sobrescreve a cor de um ja existente
+        if (!this.knownValues(field).includes(name)) {
+          this.room.send(setColorMsg, { name, color: autoHex(name) });
+        }
         this.openRegistry(kind);
       }
     };
