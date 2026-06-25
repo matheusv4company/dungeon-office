@@ -324,7 +324,8 @@ export class OfficeScene extends Phaser.Scene {
 
     // ---- camera + input + HUD ----
     this.physics.world.setBounds(0, 0, W, H);
-    this.applyFloor(this.currentFloor); // mostra so o andar atual + centraliza a camera nele
+    this.cameras.main.startFollow(this.player, true); // segue o player — sempre no centro
+    this.applyFloor(this.currentFloor); // mostra so o andar atual + cor de fundo
 
     const kb = this.input.keyboard!;
     this.cursors = kb.createCursorKeys();
@@ -830,10 +831,7 @@ export class OfficeScene extends Phaser.Scene {
       },
     );
 
-    this.onResizeRef = (g: Phaser.Structs.Size) => {
-      ui.setSize(g.width, g.height);
-      this.fitZoom(); // re-ajusta o zoom do mapa ao redimensionar
-    };
+    this.onResizeRef = (g: Phaser.Structs.Size) => ui.setSize(g.width, g.height);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.onResizeRef);
   }
 
@@ -2064,7 +2062,7 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  /** Mostra so o andar f e trava a camera (com cor de fundo) nele. */
+  /** Mostra so o andar f (esconde os outros) e ajusta a cor de fundo da camera. */
   private applyFloor(f: number) {
     for (let i = 0; i < this.floorObjs.length; i++) {
       const vis = i === f;
@@ -2073,39 +2071,10 @@ export class OfficeScene extends Phaser.Scene {
       }
     }
     const cam = this.cameras.main;
-    cam.removeBounds(); // o posicionamento da camera e manual (positionCamera)
+    cam.removeBounds(); // sem travar nos limites: o player fica sempre centralizado
     if (f === 0) cam.setBackgroundColor("#2f7fae");
     else if (f === 1) cam.setBackgroundColor("#07060d");
     else cam.setBackgroundColor("#050409");
-    this.fitZoom(); // zoom pra caber o andar inteiro, centralizado
-  }
-
-  /** Limites (px) do andar f dentro do mapa. */
-  private floorBounds(f: number): { x: number; y: number; w: number; h: number } {
-    if (f === 0) return { x: 0, y: 0, w: W, h: OY * T };
-    if (f === 1) return { x: 0, y: OY * T, w: W, h: OFFICE_ROWS * T };
-    return { x: 0, y: CRYPT_Y0 * T, w: W, h: (ROWS - CRYPT_Y0) * T };
-  }
-
-  /** Ajusta o zoom pra o andar atual caber na tela com uma margem pequena. */
-  private fitZoom() {
-    const cam = this.cameras.main;
-    const b = this.floorBounds(this.currentFloor);
-    if (!cam.width || !cam.height || !b.w || !b.h) return;
-    const z = Math.min(cam.width / b.w, cam.height / b.h) * 0.96; // 0.96 = margem em volta
-    cam.setZoom(Phaser.Math.Clamp(z, 0.6, 2.2));
-  }
-
-  /** Centraliza a camera no andar quando ele cabe na tela; senao segue o player. */
-  private positionCamera() {
-    const cam = this.cameras.main;
-    const b = this.floorBounds(this.currentFloor);
-    const vw = cam.width / cam.zoom;
-    const vh = cam.height / cam.zoom;
-    cam.scrollX =
-      b.w <= vw ? b.x + (b.w - vw) / 2 : Phaser.Math.Clamp(this.player.x - vw / 2, b.x, b.x + b.w - vw);
-    cam.scrollY =
-      b.h <= vh ? b.y + (b.h - vh) / 2 : Phaser.Math.Clamp(this.player.y - vh / 2, b.y, b.y + b.h - vh);
   }
 
   /**
@@ -2234,8 +2203,6 @@ export class OfficeScene extends Phaser.Scene {
       if (uiOpen) kbd.disableGlobalCapture();
       else kbd.enableGlobalCapture();
     }
-
-    this.positionCamera(); // centraliza o andar (ou segue o player quando com zoom)
 
     if (left) body.setVelocityX(-SPEED);
     else if (right) body.setVelocityX(SPEED);
