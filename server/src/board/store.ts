@@ -1,4 +1,4 @@
-import { promises as fs } from "fs";
+import { promises as fs, mkdirSync, writeFileSync, renameSync } from "fs";
 import * as path from "path";
 
 /** Dados crus de um card persistido. */
@@ -59,4 +59,27 @@ export function saveBoard(data: BoardData): void {
       }
     })();
   }, 400);
+}
+
+/**
+ * Grava IMEDIATAMENTE (sincrono) o que estiver pendente no debounce.
+ * Pra usar no shutdown da sala — senao as ultimas edicoes (dentro da janela
+ * de 400ms) se perdem quando o processo reinicia (ex: redeploy do Coolify).
+ */
+export function flushBoardSync(): void {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  const d = pending;
+  pending = null;
+  if (!d) return;
+  try {
+    mkdirSync(DIR, { recursive: true });
+    const tmp = `${FILE}.tmp`;
+    writeFileSync(tmp, JSON.stringify(d, null, 2), "utf8");
+    renameSync(tmp, FILE);
+  } catch (e) {
+    console.error("[board] erro ao salvar (flush):", e);
+  }
 }

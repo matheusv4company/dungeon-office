@@ -2,7 +2,7 @@ import { Room, Client } from "colyseus";
 import { OfficeState } from "../schema/OfficeState";
 import { Player } from "../schema/Player";
 import { Task } from "../schema/Task";
-import { loadBoard, saveBoard, type TaskData, type ClientColor } from "../board/store";
+import { loadBoard, saveBoard, flushBoardSync, type TaskData, type ClientColor } from "../board/store";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -263,5 +263,13 @@ export class OfficeRoom extends Room<OfficeState> {
   onLeave(client: Client) {
     this.state.players.delete(client.sessionId);
     console.log(`[OfficeRoom] saiu: ${client.sessionId}`);
+  }
+
+  onDispose() {
+    // grava na hora qualquer edicao pendente no debounce antes da sala morrer.
+    // No redeploy do Coolify (SIGTERM) o Colyseus faz shutdown gracioso e chama
+    // onDispose — sem isso as ultimas alteracoes do board se perderiam.
+    flushBoardSync();
+    console.log("[OfficeRoom] sala encerrada (board gravado)");
   }
 }

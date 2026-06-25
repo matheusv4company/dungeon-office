@@ -1273,6 +1273,7 @@ export class OfficeScene extends Phaser.Scene {
       /* ignore */
     }
     this.room = undefined;
+    this.kanban?.close(); // fecha o board (se aberto) — libera o teclado/overlay
     const ov = document.createElement("div");
     ov.style.cssText =
       "position:fixed;inset:0;z-index:10001;display:flex;flex-direction:column;" +

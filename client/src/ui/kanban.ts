@@ -57,7 +57,7 @@ function fmtDate(due: string): string {
   if (!due) return "";
   const d = new Date(`${due}T00:00:00`);
   if (Number.isNaN(d.getTime())) return due;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 const STYLE_ID = "kb-styles";
@@ -480,6 +480,7 @@ export class KanbanBoard {
 
   private onCardPointerDown(e: PointerEvent, card: HTMLDivElement, t: TaskView) {
     if (e.button && e.button !== 0) return;
+    if (this.drag) return; // ja arrastando outro card (ex: multitoque) — ignora o 2o
     this.drag = { id: t.id, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, moved: false, card, task: t };
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
@@ -742,6 +743,7 @@ export class KanbanBoard {
     document.removeEventListener("keydown", this.onKeydown);
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("pointercancel", this.onPointerUp);
     this.overlay.remove();
     this.modalBg.remove();
   }
