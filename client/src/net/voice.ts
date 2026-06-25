@@ -178,6 +178,18 @@ export class VoiceManager {
     });
   }
 
+  /**
+   * Solta a faixa de um participante imediatamente (silencia + desanexa), sem
+   * esperar o timeout do LiveKit. Usado quando o Colyseus ja removeu o jogador —
+   * evita faixa-zumbi tocando depois que a pessoa saiu.
+   */
+  dropTrack(id: string): void {
+    this.tracks.get(id)?.setVolume(0);
+    this.els.get(id)?.remove();
+    this.els.delete(id);
+    this.tracks.delete(id);
+  }
+
   applyShareVisibility(shouldShow: (identity: string) => boolean): void {
     this.shares.forEach((s, id) => {
       const show = shouldShow(id);

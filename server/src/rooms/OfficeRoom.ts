@@ -22,6 +22,7 @@ export class OfficeRoom extends Room<OfficeState> {
       if (typeof msg.y === "number") p.y = msg.y;
       if (typeof msg.dir === "number") p.dir = clamp(msg.dir | 0, 0, 3);
       p.moving = !!msg.moving;
+      p.t = Date.now(); // carimbo de frescor: muda a cada move (mesmo parado)
     });
 
     // "Chamar": avisa o alvo e manda a posicao autoritativa de quem chamou,

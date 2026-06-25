@@ -33,6 +33,7 @@ const FLAME_GREEN: Flame = { glow: 0x47ff9e, tints: [0xb6ffd8, 0x57ffb0, 0x23e57
 // voz: raios de proximidade (px) — queda quadratica (cai rapido com a distancia)
 const VOICE_FULL = 40; // dentro disso: volume cheio (~1 tile)
 const VOICE_MAX = 160; // alem disso: silencio (~5 tiles)
+const VOICE_STALE_MS = 1500; // sem update de posicao ha mais que isso: nao confio (mudo)
 
 // zonas de reuniao (px) — dentro de uma zona, so quem esta na MESMA zona se ouve.
 // A posicao rastreada e o CENTRO do sprite, que fica ~0.6 tile ACIMA dos pes; por
@@ -120,6 +121,7 @@ export class OfficeScene extends Phaser.Scene {
   private fireBtn?: Phaser.GameObjects.Text;
   private pinchPrev = 0; // distância anterior entre 2 dedos (pinça)
   private voiceBgTimer?: ReturnType<typeof setInterval>; // recalcula proximidade com a aba oculta
+  private lastPosAt = new Map<string, number>(); // sid -> ms do ultimo update de posicao (frescor)
 
   // HP / dano / morte
   private dead = false;
@@ -189,6 +191,7 @@ export class OfficeScene extends Phaser.Scene {
     this.pinchPrev = 0;
     if (this.voiceBgTimer) clearInterval(this.voiceBgTimer);
     this.voiceBgTimer = undefined;
+    this.lastPosAt.clear();
     this.dead = false;
     this.myHp = 100;
     this.myDmgAt = 0;
@@ -381,7 +384,17 @@ export class OfficeScene extends Phaser.Scene {
     // ~1x/s usando as posicoes que chegam pelo WebSocket — mata o vazamento
     // sem precisar mutar quem esta perto. No 1o plano o update() ja cuida.
     this.voiceBgTimer = setInterval(() => {
-      if (document.hidden) this.recomputeVoiceProximity();
+      if (!document.hidden) return;
+      this.recomputeVoiceProximity(); // protege o OUVINTE (recalcula proximidade)
+      // mantem a posicao do FALANTE fresca mesmo com a aba oculta (RAF congelado):
+      // o servidor recarimba `t`, senao os outros o mutariam por staleness mesmo
+      // estando presente. Combinado com a trava de frescor, fecha o vazamento.
+      this.room?.send("move", {
+        x: Math.round(this.player.x),
+        y: Math.round(this.player.y),
+        dir: this.lastDir,
+        moving: false,
+      });
     }, 700);
 
     try {
@@ -410,9 +423,16 @@ export class OfficeScene extends Phaser.Scene {
     const $ = getStateCallbacks(room) as (obj: unknown) => any;
     $(room.state).players.onAdd((player: any, sid: string) => {
       if (sid !== room.sessionId) this.addRemote(sid, player);
+      // frescor da posicao: o servidor carimba `t` a cada move (mesmo parado),
+      // entao `t` muda ~80ms enquanto a pessoa esta viva. Se parar de chegar, a
+      // posicao dela esta stale e nao da pra confiar nela pro audio (vazamento).
+      this.lastPosAt.set(sid, performance.now());
+      $(player).listen("t", () => this.lastPosAt.set(sid, performance.now()));
       this.refreshRoster();
     });
     $(room.state).players.onRemove((_p: any, sid: string) => {
+      this.lastPosAt.delete(sid);
+      this.voice.dropTrack(sid); // some a faixa de voz junto com o jogador
       this.removeRemote(sid);
       this.refreshRoster();
     });
@@ -2006,9 +2026,15 @@ export class OfficeScene extends Phaser.Scene {
     if (!state.players) return;
     const self = { x: this.player.x, y: this.player.y };
     const myZone = zoneAt(self.x, self.y);
+    const now = performance.now();
     this.voice.applyGains((id) => {
       const p = state.players?.get(id);
       if (!p) return 0;
+      // FAIL-SAFE de privacidade: se a posicao parou de atualizar (a pessoa
+      // congelou a aba / caiu / lag), NAO confio nela -> silencio. Sem isso, uma
+      // posicao stale (perto/na-sala) ficava com volume alto mesmo com a pessoa
+      // longe = vazamento esporadico de voz.
+      if (now - (this.lastPosAt.get(id) ?? 0) > VOICE_STALE_MS) return 0;
       if (floorOfY(p.y) !== this.currentFloor) return 0;
       const tz = zoneAt(p.x, p.y);
       if (myZone >= 0 || tz >= 0) return myZone >= 0 && myZone === tz ? 1 : 0;

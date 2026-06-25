@@ -14,4 +14,10 @@ export class Player extends Schema {
   @type("boolean") handRaised = false;
   /** vida 0..100 — morre em 0 (cada bola de fogo tira 20) */
   @type("uint8") hp = 100;
+  /**
+   * carimbo de tempo (ms do servidor) do ultimo "move". Muda a CADA move (mesmo
+   * parado), entao o cliente detecta posicao stale: se parou de chegar, a pessoa
+   * congelou/caiu e nao da pra confiar na posicao dela pro audio por proximidade.
+   */
+  @type("number") t = 0;
 }
