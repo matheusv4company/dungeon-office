@@ -2252,8 +2252,12 @@ export class OfficeScene extends Phaser.Scene {
         if (near) nearBoardStream = true;
       });
       if (this.kanban) {
-        if (nearBoardStream && !this.kanban.isOpen()) this.kanban.open(true);
-        else if (!nearBoardStream && this.kanban.isStreamOpened()) this.kanban.close();
+        if (nearBoardStream) {
+          if (!this.kanban.isOpen()) this.kanban.open(true); // open() respeita o "dispensar"
+        } else {
+          this.kanban.clearStreamDismiss(); // saiu de perto: pode reabrir no futuro
+          if (this.kanban.isStreamOpened()) this.kanban.close(false);
+        }
       }
 
       if (this.voice.connected) {

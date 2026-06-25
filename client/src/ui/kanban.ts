@@ -21,15 +21,26 @@ type TaskView = {
   due: string;
   col: string;
   order: number;
+  archived: boolean;
 };
 
-/** Cor consistente (pastel) derivada do nome — chips de cliente/responsavel. */
-function tagColor(name: string): { bg: string; fg: string } {
-  if (!name) return { bg: "#e5e7eb", fg: "#374151" };
+// paleta fixa de cores p/ chips automaticos (consistente por nome)
+const PALETTE = [
+  "#ef4444", "#f97316", "#f59e0b", "#eab308", "#84cc16", "#22c55e", "#10b981",
+  "#14b8a6", "#06b6d4", "#3b82f6", "#6366f1", "#8b5cf6", "#a855f7", "#d946ef",
+  "#ec4899", "#f43f5e", "#0ea5e9", "#78716c",
+];
+function autoHex(name: string): string {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  const hue = h % 360;
-  return { bg: `hsl(${hue} 70% 90%)`, fg: `hsl(${hue} 55% 30%)` };
+  return PALETTE[h % PALETTE.length];
+}
+function contrast(hex: string): string {
+  const c = hex.replace("#", "");
+  const r = parseInt(c.slice(0, 2), 16);
+  const g = parseInt(c.slice(2, 4), 16);
+  const b = parseInt(c.slice(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.62 ? "#1f2937" : "#ffffff";
 }
 
 /** Dias em atraso: hoje - entrega, so se passou e nao esta em "Feito". */
@@ -42,7 +53,6 @@ function daysOverdue(due: string, col: string): number {
   const diff = Math.floor((today.getTime() - d.getTime()) / 86400000);
   return diff > 0 ? diff : 0;
 }
-
 function fmtDate(due: string): string {
   if (!due) return "";
   const d = new Date(`${due}T00:00:00`);
@@ -59,64 +69,82 @@ function injectStyles() {
 .kb-overlay{position:fixed;inset:0;z-index:10000;display:none;flex-direction:column;
   background:#0b0a12ee;font-family:system-ui,Segoe UI,monospace;color:#1f2937;}
 .kb-overlay.open{display:flex;}
-.kb-top{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#15131d;
-  color:#f0e6c8;border-bottom:1px solid #2a2636;flex:0 0 auto;}
+.kb-top,.kb-toolbar{display:flex;align-items:center;gap:10px;padding:9px 16px;background:#15131d;
+  color:#f0e6c8;flex:0 0 auto;flex-wrap:wrap;}
+.kb-top{border-bottom:1px solid #2a2636;}
+.kb-toolbar{background:#1b1925;border-bottom:1px solid #2a2636;font-size:12px;}
 .kb-top h2{font-size:16px;margin:0;font-weight:600;}
 .kb-top .sp{flex:1;}
 .kb-btn{font:13px system-ui;cursor:pointer;border:none;border-radius:8px;padding:7px 12px;color:#fff;}
 .kb-btn.stream{background:#2a7a3a;}
 .kb-btn.stream.on{background:#b9892a;}
 .kb-btn.close{background:#3a3340;}
-.kb-board{flex:1;display:flex;gap:12px;overflow-x:auto;padding:14px;align-items:flex-start;
-  background:#11101a;}
-.kb-col{flex:0 0 270px;display:flex;flex-direction:column;max-height:100%;
-  background:#f4f5f7;border-radius:10px;padding:8px;}
+.kb-btn.ghost{background:#2f2b3a;color:#e8e0c8;}
+.kb-toolbar input[type=search],.kb-toolbar select{font:12px system-ui;padding:6px 8px;border-radius:7px;
+  border:1px solid #3a3550;background:#0f0e16;color:#e8e0c8;outline:none;}
+.kb-toolbar label{display:flex;align-items:center;gap:5px;color:#cfc7b0;cursor:pointer;user-select:none;}
+.kb-board{flex:1;display:flex;gap:12px;overflow-x:auto;padding:14px;align-items:flex-start;background:#11101a;}
+.kb-col{flex:0 0 270px;display:flex;flex-direction:column;max-height:100%;background:#f4f5f7;
+  border-radius:10px;padding:8px;}
 .kb-col-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:0 4px;}
 .kb-pill{font-size:12px;font-weight:600;color:#fff;border-radius:6px;padding:3px 9px;}
 .kb-count{font-size:12px;color:#6b7280;}
+.kb-arch{margin-left:auto;font-size:11px;color:#6b7280;background:#e9eaee;border:none;border-radius:6px;
+  padding:3px 8px;cursor:pointer;}
+.kb-arch:hover{background:#dfe1e6;}
 .kb-cards{display:flex;flex-direction:column;gap:8px;overflow-y:auto;min-height:24px;padding:2px;}
 .kb-cards.dragover{outline:2px dashed #9ca3af;outline-offset:-2px;border-radius:8px;}
 .kb-card{background:#fff;border:1.5px solid #e5e7eb;border-left-width:4px;border-radius:8px;
-  padding:9px 10px;cursor:grab;box-shadow:0 1px 2px #0001;}
+  padding:9px 10px;cursor:grab;box-shadow:0 1px 2px #0001;touch-action:none;user-select:none;}
 .kb-card:hover{box-shadow:0 2px 8px #0002;}
-.kb-card.dragging{opacity:.45;}
+.kb-card.archived{opacity:.55;}
+.kb-card.placeholder{background:#dbe4ff;border:1.5px dashed #93a4d6;min-height:34px;}
+.kb-ghost{position:fixed;z-index:10050;width:250px;pointer-events:none;opacity:.92;
+  transform:rotate(2deg);box-shadow:0 8px 24px #0005;}
 .kb-card .t{font-size:13px;font-weight:600;line-height:1.25;margin-bottom:6px;word-break:break-word;}
 .kb-card .meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:#6b7280;}
 .kb-chip{font-size:11px;font-weight:600;border-radius:5px;padding:2px 7px;}
 .kb-late{background:#fee2e2;color:#b91c1c;font-weight:700;border-radius:5px;padding:2px 6px;font-size:11px;}
-.kb-add{margin-top:8px;font:12px system-ui;color:#4b5563;background:#e9eaee;border:none;
-  border-radius:7px;padding:7px;cursor:pointer;width:100%;text-align:left;}
+.kb-add{margin-top:8px;font:12px system-ui;color:#4b5563;background:#e9eaee;border:none;border-radius:7px;
+  padding:7px;cursor:pointer;width:100%;text-align:left;}
 .kb-add:hover{background:#dfe1e6;}
-.kb-modal-bg{position:fixed;inset:0;z-index:10002;display:none;align-items:center;
-  justify-content:center;background:#000a;}
+.kb-modal-bg{position:fixed;inset:0;z-index:10052;display:none;align-items:center;justify-content:center;background:#000a;}
 .kb-modal-bg.open{display:flex;}
-.kb-modal{background:#fff;border-radius:12px;padding:18px;width:min(440px,92vw);
-  max-height:90vh;overflow:auto;box-shadow:0 10px 40px #000a;}
+.kb-modal{background:#fff;border-radius:12px;padding:18px;width:min(460px,92vw);max-height:90vh;
+  overflow:auto;box-shadow:0 10px 40px #000a;}
 .kb-modal h3{margin:0 0 12px;font-size:16px;}
 .kb-field{margin-bottom:11px;}
 .kb-field label{display:block;font-size:12px;color:#6b7280;margin-bottom:4px;font-weight:600;}
-.kb-field input,.kb-field textarea,.kb-field select{width:100%;box-sizing:border-box;
-  font:14px system-ui;padding:8px 9px;border:1.5px solid #d1d5db;border-radius:7px;outline:none;}
+.kb-field input,.kb-field textarea,.kb-field select{width:100%;box-sizing:border-box;font:14px system-ui;
+  padding:8px 9px;border:1.5px solid #d1d5db;border-radius:7px;outline:none;}
 .kb-field textarea{min-height:64px;resize:vertical;}
 .kb-modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;}
 .kb-modal-actions .del{margin-right:auto;background:#fee2e2;color:#b91c1c;}
+.kb-modal-actions .del.confirm{background:#b91c1c;color:#fff;}
+.kb-cli-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eee;}
+.kb-cli-row .nm{flex:1;font-size:13px;}
+.kb-cli-row input[type=color]{width:34px;height:28px;border:1px solid #ccc;border-radius:6px;padding:0;background:none;cursor:pointer;}
+.kb-cli-row .ren{font-size:11px;background:#eef;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;}
 `;
   document.head.appendChild(s);
 }
+
+type Filter = { text: string; client: string; assignee: string; lateOnly: boolean; showArchived: boolean };
 
 export class KanbanBoard {
   private room: Room;
   private $: (obj: unknown) => any;
   private overlay: HTMLDivElement;
   private boardEl: HTMLDivElement;
-  private streamBtn: HTMLButtonElement;
+  private streamBtn!: HTMLButtonElement;
   private modalBg: HTMLDivElement;
   private opened = false;
   private openedByStream = false;
+  private streamDismissed = false; // usuario fechou um board aberto por stream
   private dragging = false;
   private rafQueued = false;
   private streaming = false;
-  /** chamado quando o usuario liga/desliga o stream (OfficeScene avisa o servidor) */
+  private filter: Filter = { text: "", client: "", assignee: "", lateOnly: false, showArchived: false };
   onStreamChange?: (on: boolean) => void;
 
   constructor(room: Room) {
@@ -126,25 +154,11 @@ export class KanbanBoard {
 
     this.overlay = document.createElement("div");
     this.overlay.className = "kb-overlay";
-    const top = document.createElement("div");
-    top.className = "kb-top";
-    const h2 = document.createElement("h2");
-    h2.textContent = "📋 Gestor de Tarefas";
-    const sp = document.createElement("div");
-    sp.className = "sp";
-    this.streamBtn = document.createElement("button");
-    this.streamBtn.className = "kb-btn stream";
-    this.streamBtn.textContent = "📡 Stream";
-    this.streamBtn.onclick = () => this.toggleStream();
-    const closeBtn = document.createElement("button");
-    closeBtn.className = "kb-btn close";
-    closeBtn.textContent = "✕ Fechar";
-    closeBtn.onclick = () => this.close();
-    top.append(h2, sp, this.streamBtn, closeBtn);
+    this.overlay.append(this.buildTop(), this.buildToolbar());
 
     this.boardEl = document.createElement("div");
     this.boardEl.className = "kb-board";
-    this.overlay.append(top, this.boardEl);
+    this.overlay.appendChild(this.boardEl);
     document.body.appendChild(this.overlay);
 
     this.modalBg = document.createElement("div");
@@ -154,23 +168,102 @@ export class KanbanBoard {
     };
     document.body.appendChild(this.modalBg);
 
-    // sincronizacao ao vivo: qualquer mudanca no board re-renderiza
+    document.addEventListener("keydown", this.onKeydown);
+
+    // sincronizacao ao vivo
     const tasks = this.$(room.state).tasks;
     tasks.onAdd((t: unknown) => {
       this.$(t).onChange(() => this.scheduleRender());
       this.scheduleRender();
     });
     tasks.onRemove(() => this.scheduleRender());
+    const cc = this.$(room.state).clientColors;
+    cc.onAdd(() => this.scheduleRender());
+    cc.onChange?.(() => this.scheduleRender());
+    cc.onRemove(() => this.scheduleRender());
   }
 
-  isOpen(): boolean {
+  private buildTop(): HTMLDivElement {
+    const top = document.createElement("div");
+    top.className = "kb-top";
+    const h2 = document.createElement("h2");
+    h2.textContent = "📋 Gestor de Tarefas";
+    const sp = document.createElement("div");
+    sp.className = "sp";
+    const cli = document.createElement("button");
+    cli.className = "kb-btn ghost";
+    cli.textContent = "👥 Clientes";
+    cli.onclick = () => this.openClients();
+    this.streamBtn = document.createElement("button");
+    this.streamBtn.className = "kb-btn stream";
+    this.streamBtn.textContent = "📡 Stream";
+    this.streamBtn.onclick = () => this.toggleStream();
+    const close = document.createElement("button");
+    close.className = "kb-btn close";
+    close.textContent = "✕ Fechar";
+    close.onclick = () => this.close(true);
+    top.append(h2, sp, cli, this.streamBtn, close);
+    return top;
+  }
+
+  private buildToolbar(): HTMLDivElement {
+    const bar = document.createElement("div");
+    bar.className = "kb-toolbar";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "🔍 buscar...";
+    search.oninput = () => {
+      this.filter.text = search.value.toLowerCase();
+      this.render();
+    };
+    const cliSel = document.createElement("select");
+    cliSel.dataset.role = "client";
+    cliSel.onchange = () => {
+      this.filter.client = cliSel.value;
+      this.render();
+    };
+    const asSel = document.createElement("select");
+    asSel.dataset.role = "assignee";
+    asSel.onchange = () => {
+      this.filter.assignee = asSel.value;
+      this.render();
+    };
+    const late = document.createElement("label");
+    const lateCb = document.createElement("input");
+    lateCb.type = "checkbox";
+    lateCb.onchange = () => {
+      this.filter.lateOnly = lateCb.checked;
+      this.render();
+    };
+    late.append(lateCb, document.createTextNode("só atrasados"));
+    const arch = document.createElement("label");
+    const archCb = document.createElement("input");
+    archCb.type = "checkbox";
+    archCb.onchange = () => {
+      this.filter.showArchived = archCb.checked;
+      this.render();
+    };
+    arch.append(archCb, document.createTextNode("ver arquivados"));
+    bar.append(search, cliSel, asSel, late, arch);
+    this.cliSel = cliSel;
+    this.asSel = asSel;
+    return bar;
+  }
+  private cliSel!: HTMLSelectElement;
+  private asSel!: HTMLSelectElement;
+
+  isOpen() {
     return this.opened;
   }
-  isStreamOpened(): boolean {
+  isStreamOpened() {
     return this.openedByStream;
+  }
+  clearStreamDismiss() {
+    this.streamDismissed = false;
   }
 
   open(byStream = false) {
+    if (byStream && this.streamDismissed) return; // dispensado: nao reabre ate sair de perto
     if (!byStream) this.openedByStream = false;
     else if (!this.opened) this.openedByStream = true;
     this.opened = true;
@@ -178,18 +271,25 @@ export class KanbanBoard {
     this.render();
   }
 
-  close() {
+  close(userInitiated = false) {
+    if (this.openedByStream && userInitiated) this.streamDismissed = true;
     this.opened = false;
     this.openedByStream = false;
     this.overlay.classList.remove("open");
     this.closeModal();
-    if (this.streaming) this.toggleStream(); // fechar = parar de streamar
+    if (this.streaming) this.toggleStream();
   }
 
   toggle() {
-    if (this.opened) this.close();
+    if (this.opened) this.close(true);
     else this.open(false);
   }
+
+  private onKeydown = (e: KeyboardEvent) => {
+    if (e.key !== "Escape") return;
+    if (this.modalBg.classList.contains("open")) this.closeModal();
+    else if (this.opened) this.close(true);
+  };
 
   private toggleStream() {
     this.streaming = !this.streaming;
@@ -210,32 +310,67 @@ export class KanbanBoard {
   private allTasks(): TaskView[] {
     const out: TaskView[] = [];
     const tasks = (this.room.state as unknown as { tasks: Map<string, TaskView> }).tasks;
-    tasks.forEach((t) => {
+    tasks.forEach((t) =>
       out.push({
-        id: t.id,
-        title: t.title,
-        desc: t.desc,
-        assignee: t.assignee,
-        client: t.client,
-        due: t.due,
-        col: t.col,
-        order: t.order,
-      });
-    });
+        id: t.id, title: t.title, desc: t.desc, assignee: t.assignee, client: t.client,
+        due: t.due, col: t.col, order: t.order, archived: t.archived,
+      }),
+    );
     return out;
+  }
+  private clientColors(): Map<string, string> {
+    return (this.room.state as unknown as { clientColors: Map<string, string> }).clientColors;
+  }
+  private clientBase(name: string): string {
+    return this.clientColors().get(name) || autoHex(name);
   }
 
   private knownValues(field: "client" | "assignee"): string[] {
     const set = new Set<string>();
-    for (const t of this.allTasks()) {
-      const v = t[field];
-      if (v) set.add(v);
+    for (const t of this.allTasks()) if (t[field]) set.add(t[field]);
+    if (field === "client") this.clientColors().forEach((_v, k) => set.add(k));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }
+
+  private syncFilterSelect(sel: HTMLSelectElement, field: "client" | "assignee", current: string) {
+    const vals = this.knownValues(field);
+    sel.innerHTML = "";
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = field === "client" ? "Todos os clientes" : "Todos os responsáveis";
+    sel.appendChild(all);
+    for (const v of vals) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = v;
+      sel.appendChild(o);
     }
-    return [...set].sort();
+    sel.value = vals.includes(current) ? current : "";
+    if (sel.value !== current) this.filter[field] = sel.value;
   }
 
   private render() {
-    const all = this.allTasks();
+    this.syncFilterSelect(this.cliSel, "client", this.filter.client);
+    this.syncFilterSelect(this.asSel, "assignee", this.filter.assignee);
+
+    const all = this.allTasks().filter((t) => {
+      if (!this.filter.showArchived && t.archived) return false;
+      if (this.filter.client && t.client !== this.filter.client) return false;
+      if (this.filter.assignee && t.assignee !== this.filter.assignee) return false;
+      if (this.filter.lateOnly && daysOverdue(t.due, t.col) <= 0) return false;
+      if (this.filter.text) {
+        const hay = `${t.title} ${t.desc} ${t.client} ${t.assignee}`.toLowerCase();
+        if (!hay.includes(this.filter.text)) return false;
+      }
+      return true;
+    });
+
+    // preserva a rolagem de cada coluna
+    const scroll = new Map<string, number>();
+    this.boardEl.querySelectorAll<HTMLDivElement>(".kb-cards").forEach((el) => {
+      if (el.dataset.col) scroll.set(el.dataset.col, el.scrollTop);
+    });
+
     this.boardEl.innerHTML = "";
     for (const c of COLUMNS) {
       const cards = all.filter((t) => t.col === c.key).sort((a, b) => a.order - b.order);
@@ -252,24 +387,22 @@ export class KanbanBoard {
       count.className = "kb-count";
       count.textContent = String(cards.length);
       head.append(pill, count);
+      if (c.key === "feito") {
+        const doneActive = this.allTasks().filter((t) => t.col === "feito" && !t.archived).length;
+        const arch = document.createElement("button");
+        arch.className = "kb-arch";
+        arch.textContent = `🗄 Arquivar (${doneActive})`;
+        arch.title = "Arquivar os feitos (somem do board, ficam no histórico)";
+        arch.onclick = () => {
+          if (doneActive > 0) this.room.send("board:archiveDone", {});
+        };
+        head.appendChild(arch);
+      }
 
       const list = document.createElement("div");
       list.className = "kb-cards";
       list.dataset.col = c.key;
       for (const t of cards) list.appendChild(this.cardEl(t, c.color));
-
-      // drop zone
-      list.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        list.classList.add("dragover");
-      });
-      list.addEventListener("dragleave", () => list.classList.remove("dragover"));
-      list.addEventListener("drop", (e) => {
-        e.preventDefault();
-        list.classList.remove("dragover");
-        const id = e.dataTransfer?.getData("text/plain");
-        if (id) this.dropCard(id, c.key, list, e.clientY);
-      });
 
       const add = document.createElement("button");
       add.className = "kb-add";
@@ -278,14 +411,15 @@ export class KanbanBoard {
 
       col.append(head, list, add);
       this.boardEl.appendChild(col);
+      const sc = scroll.get(c.key);
+      if (sc) list.scrollTop = sc;
     }
   }
 
   private cardEl(t: TaskView, colColor: string): HTMLDivElement {
     const card = document.createElement("div");
-    card.className = "kb-card";
+    card.className = "kb-card" + (t.archived ? " archived" : "");
     card.style.borderLeftColor = colColor;
-    card.draggable = true;
     card.dataset.id = t.id;
 
     const title = document.createElement("div");
@@ -310,47 +444,115 @@ export class KanbanBoard {
     if (t.client) {
       const ch = document.createElement("span");
       ch.className = "kb-chip";
-      const col = tagColor(t.client);
-      ch.style.background = col.bg;
-      ch.style.color = col.fg;
+      const base = this.clientBase(t.client);
+      ch.style.background = base;
+      ch.style.color = contrast(base);
       ch.textContent = t.client;
       meta.appendChild(ch);
     }
     if (t.assignee) {
       const as = document.createElement("span");
       as.className = "kb-chip";
-      const col = tagColor(t.assignee);
-      as.style.background = col.bg;
-      as.style.color = col.fg;
+      const base = autoHex(t.assignee);
+      as.style.background = base;
+      as.style.color = contrast(base);
       as.textContent = `👤 ${t.assignee}`;
       meta.appendChild(as);
     }
     if (meta.childElementCount) card.appendChild(meta);
 
-    card.onclick = () => {
-      if (!this.dragging) this.openEditor(t, t.col);
-    };
-    card.addEventListener("dragstart", (e) => {
-      this.dragging = true;
-      card.classList.add("dragging");
-      e.dataTransfer?.setData("text/plain", t.id);
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-    });
-    card.addEventListener("dragend", () => {
-      this.dragging = false;
-      card.classList.remove("dragging");
-      this.render();
-    });
+    card.addEventListener("pointerdown", (e) => this.onCardPointerDown(e, card, t));
     return card;
   }
 
-  /** Calcula a ordem fracionaria pela posicao do drop e move o card. */
-  private dropCard(id: string, col: ColKey, list: HTMLDivElement, clientY: number) {
+  // ---------- drag por pointer (mouse + touch) ----------
+
+  private drag?: {
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    ghost?: HTMLDivElement;
+    card: HTMLDivElement;
+    task: TaskView;
+  };
+
+  private onCardPointerDown(e: PointerEvent, card: HTMLDivElement, t: TaskView) {
+    if (e.button && e.button !== 0) return;
+    this.drag = { id: t.id, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, moved: false, card, task: t };
+    window.addEventListener("pointermove", this.onPointerMove);
+    window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("pointercancel", this.onPointerUp);
+  }
+
+  private onPointerMove = (e: PointerEvent) => {
+    const d = this.drag;
+    if (!d || e.pointerId !== d.pointerId) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!d.moved && Math.hypot(dx, dy) < 6) return; // ainda e clique
+    if (!d.moved) {
+      d.moved = true;
+      this.dragging = true;
+      const g = d.card.cloneNode(true) as HTMLDivElement;
+      g.className = "kb-card kb-ghost";
+      document.body.appendChild(g);
+      d.ghost = g;
+      d.card.style.visibility = "hidden";
+    }
+    if (d.ghost) {
+      d.ghost.style.left = `${e.clientX - 125}px`;
+      d.ghost.style.top = `${e.clientY - 18}px`;
+    }
+    // realca a coluna alvo
+    this.boardEl.querySelectorAll(".kb-cards").forEach((el) => el.classList.remove("dragover"));
+    const list = this.listUnder(e.clientX, e.clientY);
+    if (list) list.classList.add("dragover");
+  };
+
+  private onPointerUp = (e: PointerEvent) => {
+    const d = this.drag;
+    if (!d || e.pointerId !== d.pointerId) return;
+    window.removeEventListener("pointermove", this.onPointerMove);
+    window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("pointercancel", this.onPointerUp);
+    this.drag = undefined;
+    if (d.ghost) d.ghost.remove();
+    d.card.style.visibility = "";
+    this.boardEl.querySelectorAll(".kb-cards").forEach((el) => el.classList.remove("dragover"));
+
+    if (!d.moved) {
+      this.openEditor(d.task, d.task.col); // foi um clique
+      return;
+    }
+    this.dragging = false;
+    const list = this.listUnder(e.clientX, e.clientY);
+    if (list?.dataset.col) this.dropInto(d.id, list.dataset.col as ColKey, list, e.clientY);
+    this.render();
+  };
+
+  private listUnder(x: number, y: number): HTMLDivElement | null {
+    let el = document.elementFromPoint(x, y) as HTMLElement | null;
+    while (el && el !== this.boardEl) {
+      if (el.classList?.contains("kb-cards")) return el as HTMLDivElement;
+      el = el.parentElement;
+    }
+    // fallback: coluna pela faixa horizontal
+    const cols = [...this.boardEl.querySelectorAll<HTMLDivElement>(".kb-cards")];
+    for (const c of cols) {
+      const r = c.parentElement!.getBoundingClientRect();
+      if (x >= r.left && x <= r.right) return c;
+    }
+    return null;
+  }
+
+  private dropInto(id: string, col: ColKey, list: HTMLDivElement, clientY: number) {
+    const orderOf = (el: HTMLDivElement) =>
+      this.allTasks().find((t) => t.id === el.dataset.id)?.order ?? 0;
     const siblings = [...list.querySelectorAll<HTMLDivElement>(".kb-card")].filter(
       (el) => el.dataset.id !== id,
     );
-    const orderOf = (el: HTMLDivElement) =>
-      this.allTasks().find((t) => t.id === el.dataset.id)?.order ?? 0;
     let before: HTMLDivElement | null = null;
     for (const el of siblings) {
       const r = el.getBoundingClientRect();
@@ -378,48 +580,37 @@ export class KanbanBoard {
     const m = document.createElement("div");
     m.className = "kb-modal";
     m.onclick = (e) => e.stopPropagation();
-
     const h3 = document.createElement("h3");
     h3.textContent = editing ? "Editar tarefa" : "Nova tarefa";
     m.appendChild(h3);
 
-    const mk = (
-      label: string,
-      el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-    ) => {
+    const mk = (label: string, el: HTMLElement) => {
       const f = document.createElement("div");
       f.className = "kb-field";
       const l = document.createElement("label");
       l.textContent = label;
       f.append(l, el);
       m.appendChild(f);
-      return el;
     };
-
     const title = document.createElement("input");
     title.value = task?.title ?? "";
     title.placeholder = "Nome da tarefa";
     mk("Nome da tarefa", title);
-
     const desc = document.createElement("textarea");
     desc.value = task?.desc ?? "";
     mk("Descrição", desc);
-
     const assignee = document.createElement("input");
     assignee.value = task?.assignee ?? "";
     assignee.setAttribute("list", "kb-assignees");
     mk("Responsável", assignee);
-
     const client = document.createElement("input");
     client.value = task?.client ?? "";
     client.setAttribute("list", "kb-clients");
     mk("Cliente", client);
-
     const due = document.createElement("input");
     due.type = "date";
     due.value = task?.due ?? "";
     mk("Data de entrega", due);
-
     const colSel = document.createElement("select");
     for (const c of COLUMNS) {
       const o = document.createElement("option");
@@ -430,30 +621,28 @@ export class KanbanBoard {
     colSel.value = task?.col ?? col;
     mk("Coluna", colSel);
 
-    // datalists (lista gerenciada: sugere valores ja usados)
     const dlA = document.createElement("datalist");
     dlA.id = "kb-assignees";
-    for (const v of this.knownValues("assignee")) {
-      const o = document.createElement("option");
-      o.value = v;
-      dlA.appendChild(o);
-    }
+    for (const v of this.knownValues("assignee")) dlA.appendChild(new Option(v, v));
     const dlC = document.createElement("datalist");
     dlC.id = "kb-clients";
-    for (const v of this.knownValues("client")) {
-      const o = document.createElement("option");
-      o.value = v;
-      dlC.appendChild(o);
-    }
+    for (const v of this.knownValues("client")) dlC.appendChild(new Option(v, v));
     m.append(dlA, dlC);
 
     const actions = document.createElement("div");
     actions.className = "kb-modal-actions";
     if (editing) {
+      let armed = false;
       const del = document.createElement("button");
       del.className = "kb-btn del";
       del.textContent = "🗑 Deletar";
       del.onclick = () => {
+        if (!armed) {
+          armed = true;
+          del.textContent = "Confirmar exclusão?";
+          del.classList.add("confirm");
+          return;
+        }
         if (task) this.room.send("task:delete", { id: task.id });
         this.closeModal();
       };
@@ -481,10 +670,67 @@ export class KanbanBoard {
     };
     actions.append(cancel, save);
     m.appendChild(actions);
-
     this.modalBg.appendChild(m);
     this.modalBg.classList.add("open");
     title.focus();
+  }
+
+  // ---------- gerenciar clientes (cores + renomear) ----------
+
+  private openClients() {
+    this.modalBg.innerHTML = "";
+    const m = document.createElement("div");
+    m.className = "kb-modal";
+    m.onclick = (e) => e.stopPropagation();
+    const h3 = document.createElement("h3");
+    h3.textContent = "👥 Clientes — cor e nome";
+    m.appendChild(h3);
+    const hint = document.createElement("div");
+    hint.style.cssText = "font-size:12px;color:#6b7280;margin-bottom:8px;";
+    hint.textContent = "A cor vale pros chips em todos os cards. Renomear atualiza todos os cards do cliente.";
+    m.appendChild(hint);
+
+    const list = document.createElement("div");
+    for (const name of this.knownValues("client")) {
+      const row = document.createElement("div");
+      row.className = "kb-cli-row";
+      const color = document.createElement("input");
+      color.type = "color";
+      color.value = this.clientBase(name);
+      color.oninput = () => this.room.send("client:setColor", { name, color: color.value });
+      const nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = name;
+      const ren = document.createElement("button");
+      ren.className = "ren";
+      ren.textContent = "renomear";
+      ren.onclick = () => {
+        const to = window.prompt(`Renomear cliente "${name}" para:`, name);
+        if (to && to.trim() && to.trim() !== name) {
+          this.room.send("client:rename", { from: name, to: to.trim() });
+          this.openClients();
+        }
+      };
+      row.append(color, nm, ren);
+      list.appendChild(row);
+    }
+    if (!list.childElementCount) {
+      const empty = document.createElement("div");
+      empty.style.cssText = "color:#6b7280;font-size:13px;padding:8px 0;";
+      empty.textContent = "Nenhum cliente ainda — eles aparecem aqui quando você usa um cliente num card.";
+      list.appendChild(empty);
+    }
+    m.appendChild(list);
+    const actions = document.createElement("div");
+    actions.className = "kb-modal-actions";
+    const close = document.createElement("button");
+    close.className = "kb-btn close";
+    close.textContent = "Fechar";
+    close.onclick = () => this.closeModal();
+    actions.appendChild(close);
+    m.appendChild(actions);
+    this.modalBg.appendChild(m);
+    this.modalBg.classList.add("open");
   }
 
   private closeModal() {
@@ -493,6 +739,9 @@ export class KanbanBoard {
   }
 
   destroy() {
+    document.removeEventListener("keydown", this.onKeydown);
+    window.removeEventListener("pointermove", this.onPointerMove);
+    window.removeEventListener("pointerup", this.onPointerUp);
     this.overlay.remove();
     this.modalBg.remove();
   }

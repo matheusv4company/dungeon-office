@@ -2,7 +2,7 @@ import { Room, Client } from "colyseus";
 import { OfficeState } from "../schema/OfficeState";
 import { Player } from "../schema/Player";
 import { Task } from "../schema/Task";
-import { loadTasks, saveTasks, type TaskData } from "../board/store";
+import { loadBoard, saveBoard, type TaskData, type ClientColor } from "../board/store";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -19,7 +19,8 @@ export class OfficeRoom extends Room<OfficeState> {
     this.setState(new OfficeState());
 
     // carrega o board persistido do disco pro estado (sincroniza pra todos)
-    for (const d of await loadTasks()) {
+    const board = await loadBoard();
+    for (const d of board.tasks) {
       const t = new Task();
       t.id = d.id;
       t.title = d.title;
@@ -29,7 +30,11 @@ export class OfficeRoom extends Room<OfficeState> {
       t.due = d.due;
       t.col = COLS.has(d.col) ? d.col : "backlog";
       t.order = Number(d.order) || 0;
+      t.archived = !!d.archived;
       this.state.tasks.set(t.id, t);
+    }
+    for (const c of board.clients) {
+      if (c?.name && c?.color) this.state.clientColors.set(c.name, c.color);
     }
 
     // Client-authoritative: cada cliente envia sua posicao; retransmitimos.
@@ -135,6 +140,7 @@ export class OfficeRoom extends Room<OfficeState> {
           client?: string;
           due?: string;
           col?: string;
+          archived?: boolean;
         },
       ) => {
         const t = this.state.tasks.get(String(msg?.id ?? ""));
@@ -144,6 +150,7 @@ export class OfficeRoom extends Room<OfficeState> {
         if (typeof msg.assignee === "string") t.assignee = msg.assignee.slice(0, 60);
         if (typeof msg.client === "string") t.client = msg.client.slice(0, 60);
         if (typeof msg.due === "string") t.due = msg.due.slice(0, 10);
+        if (typeof msg.archived === "boolean") t.archived = msg.archived;
         if (COLS.has(String(msg?.col)) && msg.col !== t.col) {
           // trocou de coluna pelo modal: vai pro fim da coluna nova
           t.col = String(msg.col);
@@ -173,6 +180,44 @@ export class OfficeRoom extends Room<OfficeState> {
       }
     });
 
+    // arquiva todos os cards em "Feito" (somem do board, mas ficam no historico)
+    this.onMessage("board:archiveDone", () => {
+      let changed = false;
+      this.state.tasks.forEach((t) => {
+        if (t.col === "feito" && !t.archived) {
+          t.archived = true;
+          changed = true;
+        }
+      });
+      if (changed) this.persistBoard();
+    });
+
+    // define a cor (hex) de um cliente; cor vazia remove o override (volta pra auto)
+    this.onMessage("client:setColor", (_c, msg: { name?: string; color?: string }) => {
+      const name = String(msg?.name ?? "").trim().slice(0, 60);
+      if (!name) return;
+      const color = String(msg?.color ?? "").trim().slice(0, 9);
+      if (color) this.state.clientColors.set(name, color);
+      else this.state.clientColors.delete(name);
+      this.persistBoard();
+    });
+
+    // renomeia um cliente em TODOS os cards + no registro de cores
+    this.onMessage("client:rename", (_c, msg: { from?: string; to?: string }) => {
+      const from = String(msg?.from ?? "").trim();
+      const to = String(msg?.to ?? "").trim().slice(0, 60);
+      if (!from || !to || from === to) return;
+      this.state.tasks.forEach((t) => {
+        if (t.client === from) t.client = to;
+      });
+      const c = this.state.clientColors.get(from);
+      if (c !== undefined) {
+        this.state.clientColors.delete(from);
+        this.state.clientColors.set(to, c);
+      }
+      this.persistBoard();
+    });
+
     // "stream" do board: marca/desmarca — quem estiver perto ve/edita junto.
     this.onMessage("board:stream", (client, msg: { on?: boolean }) => {
       const p = this.state.players.get(client.sessionId);
@@ -182,11 +227,11 @@ export class OfficeRoom extends Room<OfficeState> {
     console.log("[OfficeRoom] sala criada");
   }
 
-  /** Serializa o board atual e agenda a gravacao em disco (debounced). */
+  /** Serializa o board atual (tarefas + cores de cliente) e agenda a gravacao. */
   private persistBoard() {
-    const arr: TaskData[] = [];
+    const tasks: TaskData[] = [];
     this.state.tasks.forEach((t) => {
-      arr.push({
+      tasks.push({
         id: t.id,
         title: t.title,
         desc: t.desc,
@@ -195,9 +240,12 @@ export class OfficeRoom extends Room<OfficeState> {
         due: t.due,
         col: t.col,
         order: t.order,
+        archived: t.archived,
       });
     });
-    saveTasks(arr);
+    const clients: ClientColor[] = [];
+    this.state.clientColors.forEach((color, name) => clients.push({ name, color }));
+    saveBoard({ tasks, clients });
   }
 
   onJoin(client: Client, options: JoinOptions = {}) {
