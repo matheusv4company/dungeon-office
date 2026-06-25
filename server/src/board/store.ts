@@ -12,10 +12,11 @@ export type TaskData = {
   col: string;
   order: number;
   archived: boolean;
+  unit: string; // "" | "ia" | "mkt"
 };
 
 export type ClientColor = { name: string; color: string };
-export type BoardData = { tasks: TaskData[]; clients: ClientColor[] };
+export type BoardData = { tasks: TaskData[]; clients: ClientColor[]; members: ClientColor[] };
 
 // Em producao a CWD do servidor e /app (Dockerfile), entao /app/data — onde o
 // Coolify monta o volume persistente. Em dev cai em <cwd>/data. Override por env.
@@ -30,9 +31,10 @@ export async function loadBoard(): Promise<BoardData> {
     return {
       tasks: Array.isArray(data.tasks) ? data.tasks : [],
       clients: Array.isArray(data.clients) ? data.clients : [],
+      members: Array.isArray(data.members) ? data.members : [],
     };
   } catch {
-    return { tasks: [], clients: [] };
+    return { tasks: [], clients: [], members: [] };
   }
 }
 

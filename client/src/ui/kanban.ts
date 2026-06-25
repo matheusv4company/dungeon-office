@@ -22,7 +22,19 @@ type TaskView = {
   col: string;
   order: number;
   archived: boolean;
+  unit: string; // "" | "ia" | "mkt"
 };
+
+// empresas (categoria IA / Marketing) — rotulo + cor do selo no card
+const UNIT_META: Record<string, { label: string; color: string }> = {
+  ia: { label: "IA", color: "#14b8a6" },
+  mkt: { label: "Marketing", color: "#f59e0b" },
+};
+const UNIT_OPTS: { value: string; label: string }[] = [
+  { value: "", label: "— nenhuma —" },
+  { value: "ia", label: "IA" },
+  { value: "mkt", label: "Marketing" },
+];
 
 // paleta fixa de cores p/ chips automaticos (consistente por nome)
 const PALETTE = [
@@ -75,6 +87,10 @@ function injectStyles() {
 .kb-toolbar{background:#1b1925;border-bottom:1px solid #2a2636;font-size:12px;}
 .kb-top h2{font-size:16px;margin:0;font-weight:600;}
 .kb-top .sp{flex:1;}
+.kb-seg{display:inline-flex;border:1px solid #3a3550;border-radius:8px;overflow:hidden;}
+.kb-seg-btn{font:12px system-ui;cursor:pointer;border:none;background:#0f0e16;color:#cfc7b0;padding:7px 13px;}
+.kb-seg-btn+.kb-seg-btn{border-left:1px solid #3a3550;}
+.kb-seg-btn.active{background:#b9892a;color:#fff;font-weight:600;}
 .kb-btn{font:13px system-ui;cursor:pointer;border:none;border-radius:8px;padding:7px 12px;color:#fff;}
 .kb-btn.stream{background:#2a7a3a;}
 .kb-btn.stream.on{background:#b9892a;}
@@ -129,7 +145,14 @@ function injectStyles() {
   document.head.appendChild(s);
 }
 
-type Filter = { text: string; client: string; assignee: string; lateOnly: boolean; showArchived: boolean };
+type Filter = {
+  text: string;
+  client: string;
+  assignee: string;
+  unit: string;
+  lateOnly: boolean;
+  showArchived: boolean;
+};
 
 export class KanbanBoard {
   private room: Room;
@@ -144,7 +167,9 @@ export class KanbanBoard {
   private dragging = false;
   private rafQueued = false;
   private streaming = false;
-  private filter: Filter = { text: "", client: "", assignee: "", lateOnly: false, showArchived: false };
+  private filter: Filter = {
+    text: "", client: "", assignee: "", unit: "", lateOnly: false, showArchived: false,
+  };
   onStreamChange?: (on: boolean) => void;
 
   constructor(room: Room) {
@@ -177,10 +202,11 @@ export class KanbanBoard {
       this.scheduleRender();
     });
     tasks.onRemove(() => this.scheduleRender());
-    const cc = this.$(room.state).clientColors;
-    cc.onAdd(() => this.scheduleRender());
-    cc.onChange?.(() => this.scheduleRender());
-    cc.onRemove(() => this.scheduleRender());
+    for (const reg of [this.$(room.state).clientColors, this.$(room.state).memberColors]) {
+      reg.onAdd(() => this.scheduleRender());
+      reg.onChange?.(() => this.scheduleRender());
+      reg.onRemove(() => this.scheduleRender());
+    }
   }
 
   private buildTop(): HTMLDivElement {
@@ -188,12 +214,33 @@ export class KanbanBoard {
     top.className = "kb-top";
     const h2 = document.createElement("h2");
     h2.textContent = "📋 Gestor de Tarefas";
+
+    // seletor de empresa (visao da daily): Todas · IA · Marketing
+    const seg = document.createElement("div");
+    seg.className = "kb-seg";
+    for (const o of [{ value: "", label: "Todas" }, { value: "ia", label: "IA" }, { value: "mkt", label: "Marketing" }]) {
+      const b = document.createElement("button");
+      b.className = "kb-seg-btn";
+      b.textContent = o.label;
+      b.dataset.unit = o.value;
+      b.onclick = () => {
+        this.filter.unit = o.value;
+        this.render();
+      };
+      seg.appendChild(b);
+    }
+    this.unitSeg = seg;
+
     const sp = document.createElement("div");
     sp.className = "sp";
     const cli = document.createElement("button");
     cli.className = "kb-btn ghost";
     cli.textContent = "👥 Clientes";
-    cli.onclick = () => this.openClients();
+    cli.onclick = () => this.openRegistry("client");
+    const mem = document.createElement("button");
+    mem.className = "kb-btn ghost";
+    mem.textContent = "🧑‍🤝‍🧑 Membros";
+    mem.onclick = () => this.openRegistry("member");
     this.streamBtn = document.createElement("button");
     this.streamBtn.className = "kb-btn stream";
     this.streamBtn.textContent = "📡 Stream";
@@ -202,9 +249,10 @@ export class KanbanBoard {
     close.className = "kb-btn close";
     close.textContent = "✕ Fechar";
     close.onclick = () => this.close(true);
-    top.append(h2, sp, cli, this.streamBtn, close);
+    top.append(h2, seg, sp, cli, mem, this.streamBtn, close);
     return top;
   }
+  private unitSeg!: HTMLDivElement;
 
   private buildToolbar(): HTMLDivElement {
     const bar = document.createElement("div");
@@ -313,7 +361,7 @@ export class KanbanBoard {
     tasks.forEach((t) =>
       out.push({
         id: t.id, title: t.title, desc: t.desc, assignee: t.assignee, client: t.client,
-        due: t.due, col: t.col, order: t.order, archived: t.archived,
+        due: t.due, col: t.col, order: t.order, archived: t.archived, unit: t.unit,
       }),
     );
     return out;
@@ -321,14 +369,24 @@ export class KanbanBoard {
   private clientColors(): Map<string, string> {
     return (this.room.state as unknown as { clientColors: Map<string, string> }).clientColors;
   }
+  private memberColors(): Map<string, string> {
+    return (this.room.state as unknown as { memberColors: Map<string, string> }).memberColors;
+  }
   private clientBase(name: string): string {
     return this.clientColors().get(name) || autoHex(name);
+  }
+  private memberBase(name: string): string {
+    return this.memberColors().get(name) || autoHex(name);
+  }
+  private baseFor(field: "client" | "assignee", name: string): string {
+    return field === "client" ? this.clientBase(name) : this.memberBase(name);
   }
 
   private knownValues(field: "client" | "assignee"): string[] {
     const set = new Set<string>();
     for (const t of this.allTasks()) if (t[field]) set.add(t[field]);
-    if (field === "client") this.clientColors().forEach((_v, k) => set.add(k));
+    const reg = field === "client" ? this.clientColors() : this.memberColors();
+    reg.forEach((_v, k) => set.add(k));
     return [...set].sort((a, b) => a.localeCompare(b));
   }
 
@@ -352,9 +410,13 @@ export class KanbanBoard {
   private render() {
     this.syncFilterSelect(this.cliSel, "client", this.filter.client);
     this.syncFilterSelect(this.asSel, "assignee", this.filter.assignee);
+    this.unitSeg.querySelectorAll<HTMLButtonElement>(".kb-seg-btn").forEach((b) => {
+      b.classList.toggle("active", (b.dataset.unit ?? "") === this.filter.unit);
+    });
 
     const all = this.allTasks().filter((t) => {
       if (!this.filter.showArchived && t.archived) return false;
+      if (this.filter.unit && t.unit !== this.filter.unit) return false;
       if (this.filter.client && t.client !== this.filter.client) return false;
       if (this.filter.assignee && t.assignee !== this.filter.assignee) return false;
       if (this.filter.lateOnly && daysOverdue(t.due, t.col) <= 0) return false;
@@ -429,6 +491,15 @@ export class KanbanBoard {
 
     const meta = document.createElement("div");
     meta.className = "meta";
+    const um = UNIT_META[t.unit];
+    if (um) {
+      const ub = document.createElement("span");
+      ub.className = "kb-chip";
+      ub.style.background = um.color;
+      ub.style.color = contrast(um.color);
+      ub.textContent = um.label;
+      meta.appendChild(ub);
+    }
     if (t.due) {
       const dt = document.createElement("span");
       dt.textContent = fmtDate(t.due);
@@ -453,7 +524,7 @@ export class KanbanBoard {
     if (t.assignee) {
       const as = document.createElement("span");
       as.className = "kb-chip";
-      const base = autoHex(t.assignee);
+      const base = this.memberBase(t.assignee);
       as.style.background = base;
       as.style.color = contrast(base);
       as.textContent = `👤 ${t.assignee}`;
@@ -575,6 +646,44 @@ export class KanbanBoard {
 
   // ---------- modal criar/editar ----------
 
+  /** Select gerenciado p/ cliente/membro: lista os registrados + "adicionar novo". */
+  private buildManagedSelect(field: "client" | "assignee", current: string): HTMLSelectElement {
+    const sel = document.createElement("select");
+    const isClient = field === "client";
+    const addMsg = isClient ? "client:setColor" : "member:setColor";
+    const fill = (val: string) => {
+      sel.innerHTML = "";
+      sel.appendChild(new Option(isClient ? "— sem cliente —" : "— sem responsável —", ""));
+      const names = this.knownValues(field);
+      if (val && !names.includes(val)) names.push(val);
+      names.sort((a, b) => a.localeCompare(b));
+      for (const n of names) {
+        const o = new Option(n, n);
+        o.style.color = this.baseFor(field, n);
+        sel.appendChild(o);
+      }
+      sel.appendChild(new Option(isClient ? "➕ Adicionar cliente…" : "➕ Adicionar membro…", "__add__"));
+      sel.value = val;
+      sel.dataset.prev = val;
+    };
+    fill(current);
+    sel.onchange = () => {
+      if (sel.value === "__add__") {
+        const label = isClient ? "cliente" : "membro";
+        const name = window.prompt(`Nome do novo ${label}:`, "")?.trim();
+        if (name) {
+          this.room.send(addMsg, { name, color: autoHex(name) }); // registra na lista persistente
+          fill(name);
+        } else {
+          fill(sel.dataset.prev ?? "");
+        }
+      } else {
+        sel.dataset.prev = sel.value;
+      }
+    };
+    return sel;
+  }
+
   private openEditor(task: TaskView | null, col: string) {
     const editing = !!task;
     this.modalBg.innerHTML = "";
@@ -600,14 +709,14 @@ export class KanbanBoard {
     const desc = document.createElement("textarea");
     desc.value = task?.desc ?? "";
     mk("Descrição", desc);
-    const assignee = document.createElement("input");
-    assignee.value = task?.assignee ?? "";
-    assignee.setAttribute("list", "kb-assignees");
+    const assignee = this.buildManagedSelect("assignee", task?.assignee ?? "");
     mk("Responsável", assignee);
-    const client = document.createElement("input");
-    client.value = task?.client ?? "";
-    client.setAttribute("list", "kb-clients");
+    const client = this.buildManagedSelect("client", task?.client ?? "");
     mk("Cliente", client);
+    const unitSel = document.createElement("select");
+    for (const o of UNIT_OPTS) unitSel.appendChild(new Option(o.label, o.value));
+    unitSel.value = task?.unit ?? "";
+    mk("Empresa (IA / Marketing)", unitSel);
     const due = document.createElement("input");
     due.type = "date";
     due.value = task?.due ?? "";
@@ -621,14 +730,6 @@ export class KanbanBoard {
     }
     colSel.value = task?.col ?? col;
     mk("Coluna", colSel);
-
-    const dlA = document.createElement("datalist");
-    dlA.id = "kb-assignees";
-    for (const v of this.knownValues("assignee")) dlA.appendChild(new Option(v, v));
-    const dlC = document.createElement("datalist");
-    dlC.id = "kb-clients";
-    for (const v of this.knownValues("client")) dlC.appendChild(new Option(v, v));
-    m.append(dlA, dlC);
 
     const actions = document.createElement("div");
     actions.className = "kb-modal-actions";
@@ -662,6 +763,7 @@ export class KanbanBoard {
         desc: desc.value,
         assignee: assignee.value.trim(),
         client: client.value.trim(),
+        unit: unitSel.value,
         due: due.value,
         col: colSel.value,
       };
@@ -676,29 +778,48 @@ export class KanbanBoard {
     title.focus();
   }
 
-  // ---------- gerenciar clientes (cores + renomear) ----------
+  // ---------- gerenciar listas (clientes / membros): cor + renomear + adicionar ----------
 
-  private openClients() {
+  private openRegistry(kind: "client" | "member") {
+    const isClient = kind === "client";
+    const field = isClient ? "client" : "assignee";
+    const setColorMsg = isClient ? "client:setColor" : "member:setColor";
+    const renameMsg = isClient ? "client:rename" : "member:rename";
+    const noun = isClient ? "cliente" : "membro";
+
     this.modalBg.innerHTML = "";
     const m = document.createElement("div");
     m.className = "kb-modal";
     m.onclick = (e) => e.stopPropagation();
     const h3 = document.createElement("h3");
-    h3.textContent = "👥 Clientes — cor e nome";
+    h3.textContent = isClient ? "👥 Clientes — cor e nome" : "🧑‍🤝‍🧑 Membros do time — cor e nome";
     m.appendChild(h3);
     const hint = document.createElement("div");
     hint.style.cssText = "font-size:12px;color:#6b7280;margin-bottom:8px;";
-    hint.textContent = "A cor vale pros chips em todos os cards. Renomear atualiza todos os cards do cliente.";
+    hint.textContent = `A cor vale pros chips em todos os cards. Renomear atualiza todos os cards do ${noun}.`;
     m.appendChild(hint);
 
+    const add = document.createElement("button");
+    add.className = "kb-btn ghost";
+    add.style.cssText = "margin-bottom:8px;background:#eef;color:#3730a3;";
+    add.textContent = `➕ Adicionar ${noun}`;
+    add.onclick = () => {
+      const name = window.prompt(`Nome do novo ${noun}:`, "")?.trim();
+      if (name) {
+        this.room.send(setColorMsg, { name, color: autoHex(name) });
+        this.openRegistry(kind);
+      }
+    };
+    m.appendChild(add);
+
     const list = document.createElement("div");
-    for (const name of this.knownValues("client")) {
+    for (const name of this.knownValues(field)) {
       const row = document.createElement("div");
       row.className = "kb-cli-row";
       const color = document.createElement("input");
       color.type = "color";
-      color.value = this.clientBase(name);
-      color.oninput = () => this.room.send("client:setColor", { name, color: color.value });
+      color.value = this.baseFor(field, name);
+      color.oninput = () => this.room.send(setColorMsg, { name, color: color.value });
       const nm = document.createElement("span");
       nm.className = "nm";
       nm.textContent = name;
@@ -706,10 +827,10 @@ export class KanbanBoard {
       ren.className = "ren";
       ren.textContent = "renomear";
       ren.onclick = () => {
-        const to = window.prompt(`Renomear cliente "${name}" para:`, name);
+        const to = window.prompt(`Renomear ${noun} "${name}" para:`, name);
         if (to && to.trim() && to.trim() !== name) {
-          this.room.send("client:rename", { from: name, to: to.trim() });
-          this.openClients();
+          this.room.send(renameMsg, { from: name, to: to.trim() });
+          this.openRegistry(kind);
         }
       };
       row.append(color, nm, ren);
@@ -718,7 +839,7 @@ export class KanbanBoard {
     if (!list.childElementCount) {
       const empty = document.createElement("div");
       empty.style.cssText = "color:#6b7280;font-size:13px;padding:8px 0;";
-      empty.textContent = "Nenhum cliente ainda — eles aparecem aqui quando você usa um cliente num card.";
+      empty.textContent = `Nenhum ${noun} ainda — adicione acima ou use um num card.`;
       list.appendChild(empty);
     }
     m.appendChild(list);

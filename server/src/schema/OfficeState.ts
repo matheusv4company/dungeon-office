@@ -8,4 +8,6 @@ export class OfficeState extends Schema {
   @type({ map: Task }) tasks = new MapSchema<Task>();
   /** cor (hex) por cliente — gerenciada pelo usuario; chips usam isso (senao auto) */
   @type({ map: "string" }) clientColors = new MapSchema<string>();
+  /** cor (hex) por membro do time — mesma ideia do clientColors, p/ responsaveis */
+  @type({ map: "string" }) memberColors = new MapSchema<string>();
 }

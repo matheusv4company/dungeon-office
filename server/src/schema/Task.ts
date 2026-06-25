@@ -11,4 +11,5 @@ export class Task extends Schema {
   @type("string") col = "backlog"; // backlog | afazer | fazendo | travado | feito
   @type("number") order = 0; // posicao dentro da coluna (fracionaria; ordena asc)
   @type("boolean") archived = false; // arquivado (some do board, mas fica no historico)
+  @type("string") unit = ""; // empresa dona da tarefa: "" | "ia" | "mkt"
 }

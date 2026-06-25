@@ -1,4 +1,5 @@
 import { Room, Client } from "colyseus";
+import { MapSchema } from "@colyseus/schema";
 import { OfficeState } from "../schema/OfficeState";
 import { Player } from "../schema/Player";
 import { Task } from "../schema/Task";
@@ -10,6 +11,20 @@ type CallMsg = { to?: string };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const COLS = new Set(["backlog", "afazer", "fazendo", "travado", "feito"]);
+const UNITS = new Set(["", "ia", "mkt"]); // empresa dona da tarefa
+
+// mesma paleta/hash do cliente (kanban.ts) — cor automatica deterministica por nome,
+// usada ao auto-registrar um cliente/membro novo no respectivo registro de cores.
+const PALETTE = [
+  "#ef4444", "#f97316", "#f59e0b", "#eab308", "#84cc16", "#22c55e", "#10b981",
+  "#14b8a6", "#06b6d4", "#3b82f6", "#6366f1", "#8b5cf6", "#a855f7", "#d946ef",
+  "#ec4899", "#f43f5e", "#0ea5e9", "#78716c",
+];
+function autoHex(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
 
 export class OfficeRoom extends Room<OfficeState> {
   maxClients = 50;
@@ -31,11 +46,21 @@ export class OfficeRoom extends Room<OfficeState> {
       t.col = COLS.has(d.col) ? d.col : "backlog";
       t.order = Number(d.order) || 0;
       t.archived = !!d.archived;
+      t.unit = UNITS.has(String(d.unit)) ? String(d.unit) : "";
       this.state.tasks.set(t.id, t);
     }
     for (const c of board.clients) {
       if (c?.name && c?.color) this.state.clientColors.set(c.name, c.color);
     }
+    for (const c of board.members) {
+      if (c?.name && c?.color) this.state.memberColors.set(c.name, c.color);
+    }
+    // semeia os registros com clientes/membros que ja aparecem nos cards (pra ja
+    // virem no dropdown, mesmo que nunca tenham recebido uma cor manual).
+    this.state.tasks.forEach((t) => {
+      this.register(this.state.clientColors, t.client);
+      this.register(this.state.memberColors, t.assignee);
+    });
 
     // Client-authoritative: cada cliente envia sua posicao; retransmitimos.
     this.onMessage("move", (client, msg: MoveMsg) => {
@@ -108,6 +133,7 @@ export class OfficeRoom extends Room<OfficeState> {
           assignee?: string;
           client?: string;
           due?: string;
+          unit?: string;
         },
       ) => {
         const col = COLS.has(String(msg?.col)) ? String(msg.col) : "backlog";
@@ -119,14 +145,18 @@ export class OfficeRoom extends Room<OfficeState> {
         t.client = String(msg?.client ?? "").slice(0, 60);
         t.due = String(msg?.due ?? "").slice(0, 10);
         t.col = col;
-      let maxOrder = -1; // posiciona no fim da coluna
-      this.state.tasks.forEach((x) => {
-        if (x.col === col && x.order > maxOrder) maxOrder = x.order;
-      });
-      t.order = maxOrder + 1;
-      this.state.tasks.set(t.id, t);
-      this.persistBoard();
-    });
+        t.unit = UNITS.has(String(msg?.unit)) ? String(msg.unit) : "";
+        let maxOrder = -1; // posiciona no fim da coluna
+        this.state.tasks.forEach((x) => {
+          if (x.col === col && x.order > maxOrder) maxOrder = x.order;
+        });
+        t.order = maxOrder + 1;
+        this.state.tasks.set(t.id, t);
+        this.register(this.state.clientColors, t.client);
+        this.register(this.state.memberColors, t.assignee);
+        this.persistBoard();
+      },
+    );
 
     this.onMessage(
       "task:update",
@@ -141,6 +171,7 @@ export class OfficeRoom extends Room<OfficeState> {
           due?: string;
           col?: string;
           archived?: boolean;
+          unit?: string;
         },
       ) => {
         const t = this.state.tasks.get(String(msg?.id ?? ""));
@@ -151,6 +182,9 @@ export class OfficeRoom extends Room<OfficeState> {
         if (typeof msg.client === "string") t.client = msg.client.slice(0, 60);
         if (typeof msg.due === "string") t.due = msg.due.slice(0, 10);
         if (typeof msg.archived === "boolean") t.archived = msg.archived;
+        if (typeof msg.unit === "string" && UNITS.has(msg.unit)) t.unit = msg.unit;
+        this.register(this.state.clientColors, t.client);
+        this.register(this.state.memberColors, t.assignee);
         if (COLS.has(String(msg?.col)) && msg.col !== t.col) {
           // trocou de coluna pelo modal: vai pro fim da coluna nova
           t.col = String(msg.col);
@@ -218,6 +252,32 @@ export class OfficeRoom extends Room<OfficeState> {
       this.persistBoard();
     });
 
+    // define a cor (hex) de um membro do time; vazio remove (volta pra auto)
+    this.onMessage("member:setColor", (_c, msg: { name?: string; color?: string }) => {
+      const name = String(msg?.name ?? "").trim().slice(0, 60);
+      if (!name) return;
+      const color = String(msg?.color ?? "").trim().slice(0, 9);
+      if (color) this.state.memberColors.set(name, color);
+      else this.state.memberColors.delete(name);
+      this.persistBoard();
+    });
+
+    // renomeia um membro em TODOS os cards + no registro de cores
+    this.onMessage("member:rename", (_c, msg: { from?: string; to?: string }) => {
+      const from = String(msg?.from ?? "").trim();
+      const to = String(msg?.to ?? "").trim().slice(0, 60);
+      if (!from || !to || from === to) return;
+      this.state.tasks.forEach((t) => {
+        if (t.assignee === from) t.assignee = to;
+      });
+      const c = this.state.memberColors.get(from);
+      if (c !== undefined) {
+        this.state.memberColors.delete(from);
+        this.state.memberColors.set(to, c);
+      }
+      this.persistBoard();
+    });
+
     // "stream" do board: marca/desmarca — quem estiver perto ve/edita junto.
     this.onMessage("board:stream", (client, msg: { on?: boolean }) => {
       const p = this.state.players.get(client.sessionId);
@@ -227,7 +287,12 @@ export class OfficeRoom extends Room<OfficeState> {
     console.log("[OfficeRoom] sala criada");
   }
 
-  /** Serializa o board atual (tarefas + cores de cliente) e agenda a gravacao. */
+  /** Garante que `name` esteja no registro de cores (cor automatica se ausente). */
+  private register(map: MapSchema<string>, name: string) {
+    if (name && !map.has(name)) map.set(name, autoHex(name));
+  }
+
+  /** Serializa o board atual (tarefas + cores de cliente/membro) e agenda a gravacao. */
   private persistBoard() {
     const tasks: TaskData[] = [];
     this.state.tasks.forEach((t) => {
@@ -241,11 +306,14 @@ export class OfficeRoom extends Room<OfficeState> {
         col: t.col,
         order: t.order,
         archived: t.archived,
+        unit: t.unit,
       });
     });
     const clients: ClientColor[] = [];
     this.state.clientColors.forEach((color, name) => clients.push({ name, color }));
-    saveBoard({ tasks, clients });
+    const members: ClientColor[] = [];
+    this.state.memberColors.forEach((color, name) => members.push({ name, color }));
+    saveBoard({ tasks, clients, members });
   }
 
   onJoin(client: Client, options: JoinOptions = {}) {
