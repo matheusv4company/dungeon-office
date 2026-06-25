@@ -11,3 +11,7 @@ __tmp_*
 *.output
 **/node_modules/
 **/dist/
+
+# board do kanban (persistido em volume; nao versionar)
+data/
+server/data/

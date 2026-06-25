@@ -1,18 +1,36 @@
 import { Room, Client } from "colyseus";
 import { OfficeState } from "../schema/OfficeState";
 import { Player } from "../schema/Player";
+import { Task } from "../schema/Task";
+import { loadTasks, saveTasks, type TaskData } from "../board/store";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
 type CallMsg = { to?: string };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const COLS = new Set(["backlog", "afazer", "fazendo", "travado", "feito"]);
 
 export class OfficeRoom extends Room<OfficeState> {
   maxClients = 50;
+  private taskSeq = 0;
 
-  onCreate() {
+  async onCreate() {
     this.setState(new OfficeState());
+
+    // carrega o board persistido do disco pro estado (sincroniza pra todos)
+    for (const d of await loadTasks()) {
+      const t = new Task();
+      t.id = d.id;
+      t.title = d.title;
+      t.desc = d.desc;
+      t.assignee = d.assignee;
+      t.client = d.client;
+      t.due = d.due;
+      t.col = COLS.has(d.col) ? d.col : "backlog";
+      t.order = Number(d.order) || 0;
+      this.state.tasks.set(t.id, t);
+    }
 
     // Client-authoritative: cada cliente envia sua posicao; retransmitimos.
     this.onMessage("move", (client, msg: MoveMsg) => {
@@ -72,7 +90,114 @@ export class OfficeRoom extends Room<OfficeState> {
       }
     });
 
+    // ---------- gestor de tarefas (kanban) ----------
+
+    this.onMessage(
+      "task:create",
+      (
+        _c,
+        msg: {
+          col?: string;
+          title?: string;
+          desc?: string;
+          assignee?: string;
+          client?: string;
+          due?: string;
+        },
+      ) => {
+        const col = COLS.has(String(msg?.col)) ? String(msg.col) : "backlog";
+        const t = new Task();
+        t.id = `t${Date.now().toString(36)}${(this.taskSeq++).toString(36)}`;
+        t.title = (String(msg?.title ?? "").trim() || "Nova tarefa").slice(0, 200);
+        t.desc = String(msg?.desc ?? "").slice(0, 4000);
+        t.assignee = String(msg?.assignee ?? "").slice(0, 60);
+        t.client = String(msg?.client ?? "").slice(0, 60);
+        t.due = String(msg?.due ?? "").slice(0, 10);
+        t.col = col;
+      let maxOrder = -1; // posiciona no fim da coluna
+      this.state.tasks.forEach((x) => {
+        if (x.col === col && x.order > maxOrder) maxOrder = x.order;
+      });
+      t.order = maxOrder + 1;
+      this.state.tasks.set(t.id, t);
+      this.persistBoard();
+    });
+
+    this.onMessage(
+      "task:update",
+      (
+        _c,
+        msg: {
+          id?: string;
+          title?: string;
+          desc?: string;
+          assignee?: string;
+          client?: string;
+          due?: string;
+          col?: string;
+        },
+      ) => {
+        const t = this.state.tasks.get(String(msg?.id ?? ""));
+        if (!t) return;
+        if (typeof msg.title === "string") t.title = msg.title.slice(0, 200);
+        if (typeof msg.desc === "string") t.desc = msg.desc.slice(0, 4000);
+        if (typeof msg.assignee === "string") t.assignee = msg.assignee.slice(0, 60);
+        if (typeof msg.client === "string") t.client = msg.client.slice(0, 60);
+        if (typeof msg.due === "string") t.due = msg.due.slice(0, 10);
+        if (COLS.has(String(msg?.col)) && msg.col !== t.col) {
+          // trocou de coluna pelo modal: vai pro fim da coluna nova
+          t.col = String(msg.col);
+          let maxOrder = -1;
+          this.state.tasks.forEach((x) => {
+            if (x.col === t.col && x !== t && x.order > maxOrder) maxOrder = x.order;
+          });
+          t.order = maxOrder + 1;
+        }
+        this.persistBoard();
+      },
+    );
+
+    this.onMessage("task:move", (_c, msg: { id?: string; col?: string; order?: number }) => {
+      const t = this.state.tasks.get(String(msg?.id ?? ""));
+      if (!t) return;
+      if (COLS.has(String(msg?.col))) t.col = String(msg.col);
+      if (typeof msg.order === "number" && Number.isFinite(msg.order)) t.order = msg.order;
+      this.persistBoard();
+    });
+
+    this.onMessage("task:delete", (_c, msg: { id?: string }) => {
+      const id = String(msg?.id ?? "");
+      if (this.state.tasks.has(id)) {
+        this.state.tasks.delete(id);
+        this.persistBoard();
+      }
+    });
+
+    // "stream" do board: marca/desmarca — quem estiver perto ve/edita junto.
+    this.onMessage("board:stream", (client, msg: { on?: boolean }) => {
+      const p = this.state.players.get(client.sessionId);
+      if (p) p.streamingBoard = !!msg?.on;
+    });
+
     console.log("[OfficeRoom] sala criada");
+  }
+
+  /** Serializa o board atual e agenda a gravacao em disco (debounced). */
+  private persistBoard() {
+    const arr: TaskData[] = [];
+    this.state.tasks.forEach((t) => {
+      arr.push({
+        id: t.id,
+        title: t.title,
+        desc: t.desc,
+        assignee: t.assignee,
+        client: t.client,
+        due: t.due,
+        col: t.col,
+        order: t.order,
+      });
+    });
+    saveTasks(arr);
   }
 
   onJoin(client: Client, options: JoinOptions = {}) {

@@ -3,6 +3,7 @@ import { charKey, ensureCharAnims, FRAME, loadSelection } from "../characters";
 import { joinOffice, getStateCallbacks } from "../net/room";
 import type { Room } from "../net/room";
 import { VoiceManager } from "../net/voice";
+import { KanbanBoard } from "../ui/kanban";
 
 const T = 32;
 const COLS = 30;
@@ -122,6 +123,8 @@ export class OfficeScene extends Phaser.Scene {
   private pinchPrev = 0; // distância anterior entre 2 dedos (pinça)
   private voiceBgTimer?: ReturnType<typeof setInterval>; // recalcula proximidade com a aba oculta
   private lastPosAt = new Map<string, number>(); // sid -> ms do ultimo update de posicao (frescor)
+  private kanban?: KanbanBoard; // gestor de tarefas (overlay)
+  private gestorBtn?: Phaser.GameObjects.Text;
 
   // HP / dano / morte
   private dead = false;
@@ -192,6 +195,9 @@ export class OfficeScene extends Phaser.Scene {
     if (this.voiceBgTimer) clearInterval(this.voiceBgTimer);
     this.voiceBgTimer = undefined;
     this.lastPosAt.clear();
+    this.kanban?.destroy();
+    this.kanban = undefined;
+    this.gestorBtn = undefined;
     this.dead = false;
     this.myHp = 100;
     this.myDmgAt = 0;
@@ -368,6 +374,8 @@ export class OfficeScene extends Phaser.Scene {
       this.deathOverlay = undefined;
       if (this.voiceBgTimer) clearInterval(this.voiceBgTimer);
       this.voiceBgTimer = undefined;
+      this.kanban?.destroy();
+      this.kanban = undefined;
       if (this.onResizeRef) {
         this.scale.off(Phaser.Scale.Events.RESIZE, this.onResizeRef);
         this.onResizeRef = undefined;
@@ -401,6 +409,7 @@ export class OfficeScene extends Phaser.Scene {
       const room = await joinOffice({ name, charId: this.charIndex, x, y });
       this.setupVoiceButton();
       this.setupShareButton();
+      this.setupGestorButton();
       this.setupMicButton();
       this.setupHandButton();
       this.wireRoom(room, name, x, y);
@@ -420,6 +429,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.voice.connected && this.voice.getIdentity() !== room.sessionId) {
       void this.voice.reconnect(room.sessionId, name).catch(() => {});
     }
+    this.setupKanban(room);
     const $ = getStateCallbacks(room) as (obj: unknown) => any;
     $(room.state).players.onAdd((player: any, sid: string) => {
       if (sid !== room.sessionId) this.addRemote(sid, player);
@@ -453,6 +463,36 @@ export class OfficeScene extends Phaser.Scene {
     });
     this.refreshRoster();
     this.showReconnecting(false);
+  }
+
+  /** (Re)cria o gestor de tarefas ligado a sala atual (rebind em reconexao). */
+  private setupKanban(room: Room) {
+    const wasOpen = this.kanban?.isOpen() ?? false;
+    this.kanban?.destroy();
+    this.kanban = new KanbanBoard(room);
+    this.kanban.onStreamChange = (on) => {
+      this.room?.send("board:stream", { on });
+    };
+    if (wasOpen) this.kanban.open(false);
+  }
+
+  private setupGestorButton() {
+    if (this.gestorBtn) return;
+    const btn = this.add
+      .text(this.scale.width - 16, 88, "📋 Gestor de tarefas", {
+        fontFamily: "monospace",
+        fontSize: "14px",
+        color: "#ffffff",
+        backgroundColor: "#4a3a5a",
+        padding: { x: 9, y: 6 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH)
+      .setInteractive({ useHandCursor: true });
+    this.gestorBtn = btn;
+    this.hudLayer?.add(btn);
+    btn.on("pointerdown", () => this.kanban?.toggle());
   }
 
   private handleDisconnect(name: string, x: number, y: number) {
@@ -889,7 +929,7 @@ export class OfficeScene extends Phaser.Scene {
   private setupMicButton() {
     if (this.micBtn) return;
     const btn = this.add
-      .text(this.scale.width - 16, 88, "⚙️ Microfone", {
+      .text(this.scale.width - 16, 124, "⚙️ Microfone", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -908,7 +948,7 @@ export class OfficeScene extends Phaser.Scene {
   private setupHandButton() {
     if (this.handBtn) return;
     const btn = this.add
-      .text(this.scale.width - 16, 124, "✋ Levantar a mão", {
+      .text(this.scale.width - 16, 160, "✋ Levantar a mão", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -2048,13 +2088,24 @@ export class OfficeScene extends Phaser.Scene {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setVelocity(0);
 
-    const jx = this.joyVec.x;
-    const jy = this.joyVec.y;
+    // com o gestor de tarefas aberto, o teclado e do board (nao move o boneco)
+    const uiOpen = this.kanban?.isOpen() ?? false;
+    const jx = uiOpen ? 0 : this.joyVec.x;
+    const jy = uiOpen ? 0 : this.joyVec.y;
     const J = 0.28; // zona morta do joystick
-    const left = this.cursors.left.isDown || this.keys.A.isDown || jx < -J;
-    const right = this.cursors.right.isDown || this.keys.D.isDown || jx > J;
-    const up = this.cursors.up.isDown || this.keys.W.isDown || jy < -J;
-    const down = this.cursors.down.isDown || this.keys.S.isDown || jy > J;
+    const left = !uiOpen && (this.cursors.left.isDown || this.keys.A.isDown || jx < -J);
+    const right = !uiOpen && (this.cursors.right.isDown || this.keys.D.isDown || jx > J);
+    const up = !uiOpen && (this.cursors.up.isDown || this.keys.W.isDown || jy < -J);
+    const down = !uiOpen && (this.cursors.down.isDown || this.keys.S.isDown || jy > J);
+
+    // com o board aberto, libera o teclado pros inputs do DOM (Phaser captura
+    // SPACE/WASD/setas com preventDefault, o que impediria de digitar).
+    const kbd = this.input.keyboard;
+    if (kbd && kbd.enabled === uiOpen) {
+      kbd.enabled = !uiOpen;
+      if (uiOpen) kbd.disableGlobalCapture();
+      else kbd.enableGlobalCapture();
+    }
 
     if (left) body.setVelocityX(-SPEED);
     else if (right) body.setVelocityX(SPEED);
@@ -2186,6 +2237,25 @@ export class OfficeScene extends Phaser.Scene {
       const self = { x: this.player.x, y: this.player.y };
       const myZone = zoneAt(self.x, self.y);
       this.updateMeetingBadge(myZone >= 0);
+
+      // "stream" do gestor: se alguem perto esta streamando, auto-abre o board;
+      // ao se afastar, fecha (a menos que eu tenha aberto na mao).
+      let nearBoardStream = false;
+      this.remotes.forEach((_r, sid) => {
+        if (nearBoardStream) return;
+        const sp = state.players?.get(sid);
+        if (!sp || !sp.streamingBoard) return;
+        if (floorOfY(sp.y) !== this.currentFloor) return;
+        const sz = zoneAt(sp.x, sp.y);
+        const near =
+          myZone >= 0 ? sz === myZone : sz < 0 && Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX;
+        if (near) nearBoardStream = true;
+      });
+      if (this.kanban) {
+        if (nearBoardStream && !this.kanban.isOpen()) this.kanban.open(true);
+        else if (!nearBoardStream && this.kanban.isStreamOpened()) this.kanban.close();
+      }
+
       if (this.voice.connected) {
         this.recomputeVoiceProximity();
         // tela compartilhada: mesma logica do audio de proximidade —
@@ -2230,8 +2300,9 @@ export class OfficeScene extends Phaser.Scene {
 
     if (this.voiceBtn) this.voiceBtn.setPosition(this.scale.width - 16, 16);
     if (this.shareBtn) this.shareBtn.setPosition(this.scale.width - 16, 52);
-    if (this.micBtn) this.micBtn.setPosition(this.scale.width - 16, 88);
-    if (this.handBtn) this.handBtn.setPosition(this.scale.width - 16, 124);
+    if (this.gestorBtn) this.gestorBtn.setPosition(this.scale.width - 16, 88);
+    if (this.micBtn) this.micBtn.setPosition(this.scale.width - 16, 124);
+    if (this.handBtn) this.handBtn.setPosition(this.scale.width - 16, 160);
     if (this.fireBtn) this.fireBtn.setPosition(this.scale.width - 22, this.scale.height - 22);
     if (this.isTouch) this.handlePinch();
     if (this.voice.sharing !== this.lastSharing) {

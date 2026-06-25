@@ -20,4 +20,6 @@ export class Player extends Schema {
    * congelou/caiu e nao da pra confiar na posicao dela pro audio por proximidade.
    */
   @type("number") t = 0;
+  /** esta "streamando" o gestor de tarefas (quem esta perto ve/edita junto) */
+  @type("boolean") streamingBoard = false;
 }
