@@ -107,6 +107,7 @@ export class OfficeScene extends Phaser.Scene {
   private handKey?: Phaser.Input.Keyboard.Key;
   private localHand?: Phaser.GameObjects.Text;
   private lastHandsSig = "";
+  private prevHand = new Map<string, boolean>(); // sid -> mao levantada (p/ detectar a subida)
 
   // bola de fogo (espaco) — efeito efemero sincronizado
   private fireKey?: Phaser.Input.Keyboard.Key;
@@ -195,6 +196,9 @@ export class OfficeScene extends Phaser.Scene {
     if (this.voiceBgTimer) clearInterval(this.voiceBgTimer);
     this.voiceBgTimer = undefined;
     this.lastPosAt.clear();
+    this.prevHand.clear();
+    this.personMenu?.remove();
+    this.personMenu = undefined;
     this.kanban?.destroy();
     this.kanban = undefined;
     this.gestorBtn = undefined;
@@ -320,10 +324,8 @@ export class OfficeScene extends Phaser.Scene {
       .setDepth(UI_DEPTH);
 
     // ---- camera + input + HUD ----
-    const cam = this.cameras.main;
-    cam.startFollow(this.player);
     this.physics.world.setBounds(0, 0, W, H);
-    this.applyFloor(this.currentFloor); // mostra so o andar atual + trava a camera nele
+    this.applyFloor(this.currentFloor); // mostra so o andar atual + centraliza a camera nele
 
     const kb = this.input.keyboard!;
     this.cursors = kb.createCursorKeys();
@@ -339,8 +341,8 @@ export class OfficeScene extends Phaser.Scene {
     // celular/tablet (ponteiro grosso) → habilita controles de toque
     this.isTouch = window.matchMedia("(pointer: coarse)").matches;
     const hint = this.isTouch
-      ? "Arraste no canto ⬋ pra andar  ·  🔥 atira  ·  toque num nome — chamar"
-      : "WASD/setas — andar · scroll — zoom · clique num nome — chamar · H — mão · espaço — 🔥";
+      ? "Arraste no canto ⬋ pra andar  ·  🔥 atira  ·  toque num nome — chamar/ir até"
+      : "WASD/setas — andar · scroll — zoom · clique num nome — chamar/ir até · H — mão · espaço — 🔥";
     const instr = this.add
       .text(12, 12, hint, {
         fontFamily: "monospace",
@@ -442,6 +444,7 @@ export class OfficeScene extends Phaser.Scene {
     });
     $(room.state).players.onRemove((_p: any, sid: string) => {
       this.lastPosAt.delete(sid);
+      this.prevHand.delete(sid);
       this.voice.dropTrack(sid); // some a faixa de voz junto com o jogador
       this.removeRemote(sid);
       this.refreshRoster();
@@ -770,7 +773,7 @@ export class OfficeScene extends Phaser.Scene {
         row.setInteractive({ useHandCursor: true });
         row.on("pointerover", () => row.setColor("#ffd34d"));
         row.on("pointerout", () => row.setColor("#e8e0c8"));
-        row.on("pointerdown", () => this.callPlayer(pl.id));
+        row.on("pointerdown", () => this.openPersonMenu(pl.id, pl.name));
       }
       this.rosterRows.push(row);
       y += 22;
@@ -828,7 +831,10 @@ export class OfficeScene extends Phaser.Scene {
       },
     );
 
-    this.onResizeRef = (g: Phaser.Structs.Size) => ui.setSize(g.width, g.height);
+    this.onResizeRef = (g: Phaser.Structs.Size) => {
+      ui.setSize(g.width, g.height);
+      this.fitZoom(); // re-ajusta o zoom do mapa ao redimensionar
+    };
     this.scale.on(Phaser.Scale.Events.RESIZE, this.onResizeRef);
   }
 
@@ -1039,6 +1045,65 @@ export class OfficeScene extends Phaser.Scene {
     this.showToast("📣 Chamando…", "#33445a", 1400);
   }
 
+  private personMenu?: HTMLDivElement;
+
+  /** Menu ao clicar num nome do roster: Chamar (avisa) ou Ir até (me teleporto). */
+  private openPersonMenu(sid: string, name: string) {
+    if (!this.room || sid === this.sessionId) return;
+    this.personMenu?.remove();
+    const box = document.createElement("div");
+    box.style.cssText =
+      "position:fixed;left:16px;top:118px;z-index:10000;background:#15131d;" +
+      "border:2px solid #caa44a;border-radius:12px;padding:10px 12px;min-width:190px;" +
+      "font:13px monospace;color:#f0e6c8;box-shadow:0 8px 30px #000d;";
+    const title = document.createElement("div");
+    title.textContent = name;
+    title.style.cssText =
+      "font-weight:bold;margin-bottom:8px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    const close = () => {
+      box.remove();
+      if (this.personMenu === box) this.personMenu = undefined;
+      document.removeEventListener("pointerdown", onOutside, true);
+    };
+    const mkBtn = (label: string, bg: string, fn: () => void) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.style.cssText =
+        "display:block;width:100%;text-align:left;font:13px monospace;cursor:pointer;" +
+        `background:${bg};color:#fff;border:none;border-radius:8px;padding:8px 10px;margin-bottom:6px;`;
+      b.onclick = () => {
+        fn();
+        close();
+      };
+      return b;
+    };
+    const call = mkBtn("📣 Chamar", "#33445a", () => this.callPlayer(sid));
+    const go = mkBtn("🏃 Ir até ele", "#2a7a3a", () => this.goToPlayer(sid));
+    const cancel = mkBtn("✕ Cancelar", "#3a3340", () => {});
+    box.append(title, call, go, cancel);
+    document.body.appendChild(box);
+    this.personMenu = box;
+    const onOutside = (e: PointerEvent) => {
+      if (!box.contains(e.target as Node)) close();
+    };
+    setTimeout(() => document.addEventListener("pointerdown", onOutside, true), 0);
+  }
+
+  /** Teleporta o meu personagem pra perto do alvo (troca de andar se necessario). */
+  private goToPlayer(sid: string) {
+    const state = this.room?.state as unknown as
+      | { players?: { get(id: string): { x: number; y: number } | undefined } }
+      | undefined;
+    const tp = state?.players?.get(sid);
+    if (!tp) return;
+    const f = floorOfY(tp.y);
+    if (f !== this.currentFloor) {
+      this.currentFloor = f;
+      this.applyFloor(f);
+    }
+    this.teleportNear(tp.x, tp.y);
+  }
+
   private onCalled(m: { name: string; x: number; y: number }) {
     this.playBeep();
     this.callToast?.remove();
@@ -1123,6 +1188,31 @@ export class OfficeScene extends Phaser.Scene {
       gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
       osc.start(t0);
       osc.stop(t0 + 0.42);
+      osc.onended = () => void ctx.close();
+    } catch {
+      /* sem audio disponivel */
+    }
+  }
+
+  /** Beep curto e suave (grave) — usado quando alguem perto levanta a mao. */
+  private playHandBeep() {
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      const t0 = ctx.currentTime;
+      osc.frequency.setValueAtTime(523, t0); // do5 — discreto, tipo Meet/Gather
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.1, t0 + 0.02); // baixo
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.3);
+      osc.start(t0);
+      osc.stop(t0 + 0.32);
       osc.onended = () => void ctx.close();
     } catch {
       /* sem audio disponivel */
@@ -1981,16 +2071,39 @@ export class OfficeScene extends Phaser.Scene {
       }
     }
     const cam = this.cameras.main;
-    if (f === 0) {
-      cam.setBounds(0, 0, W, OY * T);
-      cam.setBackgroundColor("#2f7fae");
-    } else if (f === 1) {
-      cam.setBounds(0, OY * T, W, OFFICE_ROWS * T);
-      cam.setBackgroundColor("#07060d");
-    } else {
-      cam.setBounds(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T);
-      cam.setBackgroundColor("#050409");
-    }
+    cam.removeBounds(); // o posicionamento da camera e manual (positionCamera)
+    if (f === 0) cam.setBackgroundColor("#2f7fae");
+    else if (f === 1) cam.setBackgroundColor("#07060d");
+    else cam.setBackgroundColor("#050409");
+    this.fitZoom(); // zoom pra caber o andar inteiro, centralizado
+  }
+
+  /** Limites (px) do andar f dentro do mapa. */
+  private floorBounds(f: number): { x: number; y: number; w: number; h: number } {
+    if (f === 0) return { x: 0, y: 0, w: W, h: OY * T };
+    if (f === 1) return { x: 0, y: OY * T, w: W, h: OFFICE_ROWS * T };
+    return { x: 0, y: CRYPT_Y0 * T, w: W, h: (ROWS - CRYPT_Y0) * T };
+  }
+
+  /** Ajusta o zoom pra o andar atual caber na tela com uma margem pequena. */
+  private fitZoom() {
+    const cam = this.cameras.main;
+    const b = this.floorBounds(this.currentFloor);
+    if (!cam.width || !cam.height || !b.w || !b.h) return;
+    const z = Math.min(cam.width / b.w, cam.height / b.h) * 0.96; // 0.96 = margem em volta
+    cam.setZoom(Phaser.Math.Clamp(z, 0.6, 2.2));
+  }
+
+  /** Centraliza a camera no andar quando ele cabe na tela; senao segue o player. */
+  private positionCamera() {
+    const cam = this.cameras.main;
+    const b = this.floorBounds(this.currentFloor);
+    const vw = cam.width / cam.zoom;
+    const vh = cam.height / cam.zoom;
+    cam.scrollX =
+      b.w <= vw ? b.x + (b.w - vw) / 2 : Phaser.Math.Clamp(this.player.x - vw / 2, b.x, b.x + b.w - vw);
+    cam.scrollY =
+      b.h <= vh ? b.y + (b.h - vh) / 2 : Phaser.Math.Clamp(this.player.y - vh / 2, b.y, b.y + b.h - vh);
   }
 
   private useStair(tx: number, ty: number) {
@@ -2107,6 +2220,8 @@ export class OfficeScene extends Phaser.Scene {
       if (uiOpen) kbd.disableGlobalCapture();
       else kbd.enableGlobalCapture();
     }
+
+    this.positionCamera(); // centraliza o andar (ou segue o player quando com zoom)
 
     if (left) body.setVelocityX(-SPEED);
     else if (right) body.setVelocityX(SPEED);
@@ -2238,6 +2353,21 @@ export class OfficeScene extends Phaser.Scene {
       const self = { x: this.player.x, y: this.player.y };
       const myZone = zoneAt(self.x, self.y);
       this.updateMeetingBadge(myZone >= 0);
+
+      // beep baixo quando alguem PERTO (mesma distancia do audio) levanta a mao
+      this.remotes.forEach((_r, sid) => {
+        const sp = state.players?.get(sid);
+        if (!sp) return;
+        const raised = !!sp.handRaised;
+        const was = this.prevHand.get(sid);
+        this.prevHand.set(sid, raised);
+        if (was === undefined || !raised || was) return; // 1a vez vista, ou nao e subida
+        const sz = zoneAt(sp.x, sp.y);
+        const near =
+          floorOfY(sp.y) === this.currentFloor &&
+          (myZone >= 0 ? sz === myZone : sz < 0 && Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX);
+        if (near) this.playHandBeep();
+      });
 
       // "stream" do gestor: se alguem perto esta streamando, auto-abre o board;
       // ao se afastar, fecha (a menos que eu tenha aberto na mao).

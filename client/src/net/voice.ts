@@ -155,7 +155,20 @@ export class VoiceManager {
   async startScreenShare(): Promise<boolean> {
     if (!this.room) return false;
     try {
-      await this.room.localParticipant.setScreenShareEnabled(true, { audio: false });
+      // Qualidade desde o 1o segundo (menos "pixelado por 10s"):
+      // - contentHint "detail" → encoder prioriza nitidez (texto) em vez de fluidez;
+      // - sem simulcast → publica direto na camada cheia (sem comecar na baixa);
+      // - bitrate alto + maintain-resolution → preserva a resolucao sob banda apertada,
+      //   derrubando FPS (tela e quase estatica) em vez de borrar a imagem.
+      await this.room.localParticipant.setScreenShareEnabled(
+        true,
+        { audio: false, contentHint: "detail" },
+        {
+          simulcast: false,
+          degradationPreference: "maintain-resolution",
+          screenShareEncoding: { maxBitrate: 4_000_000, maxFramerate: 15 },
+        },
+      );
       this.sharing = this.room.localParticipant.isScreenShareEnabled;
       if (this.sharing) this.showSelfShare();
       return this.sharing;
