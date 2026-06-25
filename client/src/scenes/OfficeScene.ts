@@ -197,8 +197,7 @@ export class OfficeScene extends Phaser.Scene {
     this.voiceBgTimer = undefined;
     this.lastPosAt.clear();
     this.prevHand.clear();
-    this.personMenu?.remove();
-    this.personMenu = undefined;
+    this.personMenuClose?.(); // fecha + remove o listener (nao so o no DOM)
     this.kanban?.destroy();
     this.kanban = undefined;
     this.gestorBtn = undefined;
@@ -1046,11 +1045,12 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private personMenu?: HTMLDivElement;
+  private personMenuClose?: () => void;
 
   /** Menu ao clicar num nome do roster: Chamar (avisa) ou Ir até (me teleporto). */
   private openPersonMenu(sid: string, name: string) {
     if (!this.room || sid === this.sessionId) return;
-    this.personMenu?.remove();
+    this.personMenuClose?.(); // fecha o anterior DE VERDADE (tira o listener tambem)
     const box = document.createElement("div");
     box.style.cssText =
       "position:fixed;left:16px;top:118px;z-index:10000;background:#15131d;" +
@@ -1063,6 +1063,7 @@ export class OfficeScene extends Phaser.Scene {
     const close = () => {
       box.remove();
       if (this.personMenu === box) this.personMenu = undefined;
+      this.personMenuClose = undefined;
       document.removeEventListener("pointerdown", onOutside, true);
     };
     const mkBtn = (label: string, bg: string, fn: () => void) => {
@@ -1083,6 +1084,7 @@ export class OfficeScene extends Phaser.Scene {
     box.append(title, call, go, cancel);
     document.body.appendChild(box);
     this.personMenu = box;
+    this.personMenuClose = close;
     const onOutside = (e: PointerEvent) => {
       if (!box.contains(e.target as Node)) close();
     };
@@ -2106,6 +2108,18 @@ export class OfficeScene extends Phaser.Scene {
       b.h <= vh ? b.y + (b.h - vh) / 2 : Phaser.Math.Clamp(this.player.y - vh / 2, b.y, b.y + b.h - vh);
   }
 
+  /**
+   * Regra UNICA de "esse player remoto me alcanca" (a mesma do audio de proximidade):
+   * mesmo andar + (mesma sala de reuniao OU, fora de sala, dentro de VOICE_MAX).
+   * Centraliza num so lugar pra audio/tela/stream-do-board/beep nunca divergirem —
+   * divergencia aqui ja causou vazamento de voz no passado.
+   */
+  private canReach(sp: { x: number; y: number }, self: { x: number; y: number }, myZone: number): boolean {
+    if (floorOfY(sp.y) !== this.currentFloor) return false;
+    const sz = zoneAt(sp.x, sp.y);
+    return myZone >= 0 ? sz === myZone : sz < 0 && Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX;
+  }
+
   private useStair(tx: number, ty: number) {
     this.player.setPosition(tx, ty);
     (this.player.body as Phaser.Physics.Arcade.Body).reset(tx, ty);
@@ -2362,11 +2376,7 @@ export class OfficeScene extends Phaser.Scene {
         const was = this.prevHand.get(sid);
         this.prevHand.set(sid, raised);
         if (was === undefined || !raised || was) return; // 1a vez vista, ou nao e subida
-        const sz = zoneAt(sp.x, sp.y);
-        const near =
-          floorOfY(sp.y) === this.currentFloor &&
-          (myZone >= 0 ? sz === myZone : sz < 0 && Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX);
-        if (near) this.playHandBeep();
+        if (this.canReach(sp, self, myZone)) this.playHandBeep();
       });
 
       // "stream" do gestor: se alguem perto esta streamando, auto-abre o board;
@@ -2376,11 +2386,7 @@ export class OfficeScene extends Phaser.Scene {
         if (nearBoardStream) return;
         const sp = state.players?.get(sid);
         if (!sp || !sp.streamingBoard) return;
-        if (floorOfY(sp.y) !== this.currentFloor) return;
-        const sz = zoneAt(sp.x, sp.y);
-        const near =
-          myZone >= 0 ? sz === myZone : sz < 0 && Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX;
-        if (near) nearBoardStream = true;
+        if (this.canReach(sp, self, myZone)) nearBoardStream = true;
       });
       if (this.kanban) {
         if (nearBoardStream) {
@@ -2398,11 +2404,7 @@ export class OfficeScene extends Phaser.Scene {
         // vejo a tela de quem estiver perto (mesma distancia do audio: VOICE_MAX).
         this.voice.applyShareVisibility((id) => {
           const sp = state.players?.get(id);
-          if (!sp) return false;
-          if (floorOfY(sp.y) !== this.currentFloor) return false; // andar diferente: nao vejo
-          const sz = zoneAt(sp.x, sp.y);
-          if (myZone >= 0 || sz >= 0) return myZone >= 0 && myZone === sz; // sala: so a mesma sala
-          return Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX; // fora: por proximidade
+          return !!sp && this.canReach(sp, self, myZone);
         });
 
         // auto-mute por privacidade: so transmite se alguem pode te ouvir
@@ -2410,14 +2412,7 @@ export class OfficeScene extends Phaser.Scene {
         this.remotes.forEach((_r, sid) => {
           if (audible) return;
           const sp = state.players?.get(sid);
-          if (!sp) return;
-          if (floorOfY(sp.y) !== this.currentFloor) return;
-          const sz = zoneAt(sp.x, sp.y);
-          if (myZone >= 0) {
-            if (sz === myZone) audible = true;
-          } else if (sz < 0 && Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX) {
-            audible = true;
-          }
+          if (sp && this.canReach(sp, self, myZone)) audible = true;
         });
         const wantMic = this.voiceOn && audible;
         if (wantMic !== this.voice.micEnabled) void this.voice.setMicEnabled(wantMic);
