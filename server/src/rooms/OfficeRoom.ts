@@ -10,6 +10,9 @@ type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
 type CallMsg = { to?: string };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+// dimensoes do mapa em px (espelham client/OfficeScene: COLS*T x ROWS*T = 30*32 x 57*32)
+const MAP_W = 960;
+const MAP_H = 1824;
 const COLS = new Set(["backlog", "afazer", "fazendo", "travado", "feito"]);
 const UNITS = new Set(["", "ia", "mkt"]); // empresa dona da tarefa
 
@@ -66,8 +69,10 @@ export class OfficeRoom extends Room<OfficeState> {
     this.onMessage("move", (client, msg: MoveMsg) => {
       const p = this.state.players.get(client.sessionId);
       if (!p) return;
-      if (typeof msg.x === "number") p.x = msg.x;
-      if (typeof msg.y === "number") p.y = msg.y;
+      // valida/limita a posicao: ignora nao-finito (NaN/Infinity) e prende dentro do
+      // mapa — um cliente bugado nao "teleporta" pra dentro da bolha de audio de outro.
+      if (typeof msg.x === "number" && Number.isFinite(msg.x)) p.x = clamp(msg.x, 0, MAP_W);
+      if (typeof msg.y === "number" && Number.isFinite(msg.y)) p.y = clamp(msg.y, 0, MAP_H);
       if (typeof msg.dir === "number") p.dir = clamp(msg.dir | 0, 0, 3);
       p.moving = !!msg.moving;
       p.t = Date.now(); // carimbo de frescor: muda a cada move (mesmo parado)

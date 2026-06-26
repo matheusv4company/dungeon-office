@@ -2093,11 +2093,22 @@ export class OfficeScene extends Phaser.Scene {
 
   /**
    * Regra UNICA de "esse player remoto me alcanca" (a mesma do audio de proximidade):
-   * mesmo andar + (mesma sala de reuniao OU, fora de sala, dentro de VOICE_MAX).
-   * Centraliza num so lugar pra audio/tela/stream-do-board/beep nunca divergirem —
-   * divergencia aqui ja causou vazamento de voz no passado.
+   * frescor da posicao + mesmo andar + (mesma sala de reuniao OU, fora de sala,
+   * dentro de VOICE_MAX). Centraliza num so lugar pra audio/tela/stream-do-board/beep
+   * nunca divergirem — divergencia aqui ja causou vazamento de voz no passado.
    */
-  private canReach(sp: { x: number; y: number }, self: { x: number; y: number }, myZone: number): boolean {
+  private canReach(
+    sid: string,
+    sp: { x: number; y: number },
+    self: { x: number; y: number },
+    myZone: number,
+    requireFresh = true,
+  ): boolean {
+    // posicao stale (aba congelada / caiu) = nao confio — trava de frescor nas vias
+    // de ENTRADA (tela/stream/beep). NAO no auto-mute (saida): travar o proprio mic
+    // por frescor cortaria minha voz se a MINHA conexao engasgasse (todos ficam stale
+    // de uma vez). O vazamento de saida ja e barrado no ganho do ouvinte.
+    if (requireFresh && performance.now() - (this.lastPosAt.get(sid) ?? 0) > VOICE_STALE_MS) return false;
     if (floorOfY(sp.y) !== this.currentFloor) return false;
     const sz = zoneAt(sp.x, sp.y);
     return myZone >= 0 ? sz === myZone : sz < 0 && Math.hypot(sp.x - self.x, sp.y - self.y) < VOICE_MAX;
@@ -2362,7 +2373,7 @@ export class OfficeScene extends Phaser.Scene {
         const was = this.prevHand.get(sid);
         this.prevHand.set(sid, raised);
         if (was === undefined || !raised || was) return; // 1a vez vista, ou nao e subida
-        if (this.canReach(sp, self, myZone)) this.playHandBeep();
+        if (this.canReach(sid, sp, self, myZone)) this.playHandBeep();
       });
 
       // "stream" do gestor: se alguem perto esta streamando, auto-abre o board;
@@ -2372,7 +2383,7 @@ export class OfficeScene extends Phaser.Scene {
         if (nearBoardStream) return;
         const sp = state.players?.get(sid);
         if (!sp || !sp.streamingBoard) return;
-        if (this.canReach(sp, self, myZone)) nearBoardStream = true;
+        if (this.canReach(sid, sp, self, myZone)) nearBoardStream = true;
       });
       if (this.kanban) {
         if (nearBoardStream) {
@@ -2390,7 +2401,7 @@ export class OfficeScene extends Phaser.Scene {
         // vejo a tela de quem estiver perto (mesma distancia do audio: VOICE_MAX).
         this.voice.applyShareVisibility((id) => {
           const sp = state.players?.get(id);
-          return !!sp && this.canReach(sp, self, myZone);
+          return !!sp && this.canReach(id, sp, self, myZone);
         });
 
         // auto-mute por privacidade: so transmite se alguem pode te ouvir
@@ -2398,7 +2409,9 @@ export class OfficeScene extends Phaser.Scene {
         this.remotes.forEach((_r, sid) => {
           if (audible) return;
           const sp = state.players?.get(sid);
-          if (sp && this.canReach(sp, self, myZone)) audible = true;
+          // saida (meu mic): SEM trava de frescor — ver canReach. Um engasgo na minha
+          // conexao nao pode me silenciar pra quem esta do meu lado.
+          if (sp && this.canReach(sid, sp, self, myZone, false)) audible = true;
         });
         const wantMic = this.voiceOn && audible;
         if (wantMic !== this.voice.micEnabled) void this.voice.setMicEnabled(wantMic);
