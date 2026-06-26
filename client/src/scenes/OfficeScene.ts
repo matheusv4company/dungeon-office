@@ -124,6 +124,7 @@ export class OfficeScene extends Phaser.Scene {
   private pinchPrev = 0; // distância anterior entre 2 dedos (pinça)
   private voiceBgTimer?: ReturnType<typeof setInterval>; // recalcula proximidade com a aba oculta
   private lastPosAt = new Map<string, number>(); // sid -> ms do ultimo update de posicao (frescor)
+  private lastVoiceRecalc = 0; // throttle do recalculo dirigido por update de posicao (WS)
   private kanban?: KanbanBoard; // gestor de tarefas (overlay)
   private gestorBtn?: Phaser.GameObjects.Text;
 
@@ -439,7 +440,20 @@ export class OfficeScene extends Phaser.Scene {
       // entao `t` muda ~80ms enquanto a pessoa esta viva. Se parar de chegar, a
       // posicao dela esta stale e nao da pra confiar nela pro audio (vazamento).
       this.lastPosAt.set(sid, performance.now());
-      $(player).listen("t", () => this.lastPosAt.set(sid, performance.now()));
+      $(player).listen("t", () => {
+        this.lastPosAt.set(sid, performance.now());
+        // FECHA O VAZAMENTO DE 2o PLANO: com a aba oculta o RAF (update) congela e
+        // o setInterval do navegador e estrangulado (>=1s, ate ~60s), entao o audio
+        // de quem se afastou continuava tocando ate o timer disparar. Os updates de
+        // posicao chegam pelo WebSocket SEM esse throttle — entao recalculamos a
+        // proximidade aqui e re-mutamos na hora quem saiu de perto.
+        if (!document.hidden) return; // em 1o plano o update() ja recalcula por frame
+        const now = performance.now();
+        if (now - this.lastVoiceRecalc > 120) {
+          this.lastVoiceRecalc = now;
+          this.recomputeVoiceProximity();
+        }
+      });
       this.refreshRoster();
     });
     $(room.state).players.onRemove((_p: any, sid: string) => {
@@ -2158,9 +2172,14 @@ export class OfficeScene extends Phaser.Scene {
    * perto audivel — sem precisar mutar tudo.
    */
   private recomputeVoiceProximity() {
-    if (!this.voice.connected || !this.room) return;
-    const state = this.room.state as unknown as { players?: { get(id: string): any } };
-    if (!state.players) return;
+    if (!this.voice.connected) return;
+    const state = this.room?.state as unknown as { players?: { get(id: string): any } } | undefined;
+    if (!this.room || !state?.players) {
+      // sem estado confiavel (reconectando / antes do 1o sync): silencio total em vez
+      // de deixar os ultimos volumes tocando — fail-safe de privacidade.
+      this.voice.applyGains(() => 0);
+      return;
+    }
     const self = { x: this.player.x, y: this.player.y };
     const myZone = zoneAt(self.x, self.y);
     const now = performance.now();
