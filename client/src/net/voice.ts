@@ -16,6 +16,7 @@ type ShareEntry = {
   card: HTMLDivElement;
   video: HTMLVideoElement;
   visible: boolean;
+  minimized: boolean;
 };
 
 const LS_MIC = "ev_micDeviceId";
@@ -214,6 +215,15 @@ export class VoiceManager {
     this.updatePanelDisplay();
   }
 
+  /**
+   * Algum compartilhamento de tela esta visivel E expandido? (pra bloquear cliques
+   * "atras" no roster). Minimizado NAO conta — quem minimiza quer usar o escritorio.
+   */
+  hasVisibleShare(): boolean {
+    for (const s of this.shares.values()) if (s.visible && !s.minimized) return true;
+    return false;
+  }
+
   speakingIds(): Set<string> {
     const ids = new Set<string>();
     if (this.room) {
@@ -288,12 +298,28 @@ export class VoiceManager {
     fsBtn.style.cssText =
       "font:12px monospace;cursor:pointer;background:#2a7a3a;color:#fff;border:none;" +
       "border-radius:6px;padding:4px 10px;";
-    header.append(title, fsBtn);
     const video = track.attach() as HTMLVideoElement;
     video.muted = true;
     video.style.cssText =
       "display:block;width:760px;max-width:64vw;max-height:64vh;border-radius:6px;" +
       "background:#000;cursor:pointer;";
+    // minimizar: quem ve pode encolher (some o video, fica so a barra do titulo)
+    const minBtn = document.createElement("button");
+    minBtn.textContent = "🗕";
+    minBtn.title = "Minimizar";
+    minBtn.style.cssText =
+      "font:12px monospace;cursor:pointer;background:#3a3340;color:#fff;border:none;" +
+      "border-radius:6px;padding:4px 10px;";
+    minBtn.onclick = () => {
+      const min = video.style.display !== "none"; // visivel agora -> vai minimizar
+      video.style.display = min ? "none" : "block";
+      fsBtn.style.display = min ? "none" : ""; // "tela cheia" nao faz sentido minimizado
+      minBtn.textContent = min ? "🗖" : "🗕";
+      minBtn.title = min ? "Expandir" : "Minimizar";
+      const e = this.shares.get(id);
+      if (e) e.minimized = min; // minimizado nao bloqueia cliques no roster (hasVisibleShare)
+    };
+    header.append(title, minBtn, fsBtn);
     const fs = () => {
       const pr = video.requestFullscreen?.();
       if (pr && typeof pr.catch === "function") pr.catch(() => {});
@@ -302,7 +328,7 @@ export class VoiceManager {
     video.onclick = fs;
     card.append(header, video);
     panel.appendChild(card);
-    this.shares.set(id, { track, card, video, visible: false });
+    this.shares.set(id, { track, card, video, visible: false, minimized: false });
   }
 
   private removeShare(id: string): void {

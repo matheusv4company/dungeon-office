@@ -787,7 +787,12 @@ export class OfficeScene extends Phaser.Scene {
         row.setInteractive({ useHandCursor: true });
         row.on("pointerover", () => row.setColor("#ffd34d"));
         row.on("pointerout", () => row.setColor("#e8e0c8"));
-        row.on("pointerdown", () => this.openPersonMenu(pl.id, pl.name));
+        row.on("pointerdown", () => {
+          // com um compartilhamento de tela na frente, clicar "atras" no nome
+          // chamava a pessoa sem querer (enquanto tentava maximizar). Ignora.
+          if (this.voice.hasVisibleShare()) return;
+          this.openPersonMenu(pl.id, pl.name);
+        });
       }
       this.rosterRows.push(row);
       y += 22;
@@ -2413,7 +2418,11 @@ export class OfficeScene extends Phaser.Scene {
           // conexao nao pode me silenciar pra quem esta do meu lado.
           if (sp && this.canReach(sid, sp, self, myZone, false)) audible = true;
         });
-        const wantMic = this.voiceOn && audible;
+        // enquanto eu apresento o board (stream), mantenho o mic ligado mesmo que o
+        // auto-mute nao detecte alguem "alcancavel" — quem esta longe ainda e barrado
+        // no ganho do ouvinte. Sem isso, clicar em "stream" no gestor me mutava.
+        const streamingBoard = this.kanban?.isStreaming() ?? false;
+        const wantMic = this.voiceOn && (audible || streamingBoard);
         if (wantMic !== this.voice.micEnabled) void this.voice.setMicEnabled(wantMic);
         if (this.voice.micEnabled !== this.lastMic) {
           this.lastMic = this.voice.micEnabled;

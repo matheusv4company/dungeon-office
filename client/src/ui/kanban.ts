@@ -306,6 +306,10 @@ export class KanbanBoard {
   isStreamOpened() {
     return this.openedByStream;
   }
+  /** estou streamando o board agora? (uso: manter o mic ligado enquanto apresento) */
+  isStreaming() {
+    return this.streaming;
+  }
   clearStreamDismiss() {
     this.streamDismissed = false;
   }
