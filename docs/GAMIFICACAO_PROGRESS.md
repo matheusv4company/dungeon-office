@@ -114,3 +114,49 @@ stats, cosmetics, social` + master `GAMIF_ALL`.
 
 **Ficou de fora:** nada do escopo do F1. (Re-render por mudança de flag pós-boot não é necessário —
 BootScene faz `await loadConfig()` antes de abrir a tela.)
+
+---
+
+## F2 — Gate de entrega (escrow) ✅ FEITO
+**Commit:** (ver `git log`) · **Flag:** `GAMIF_GATE` (default ON). **Desligar:** `GAMIF_GATE=0`.
+
+**O que entrou (estados no card de "Feito", sem novas colunas):**
+- `server/src/schema/Task.ts` — campos: `delivered, deliveredAt, deliveredBy, proof, deliverNote, verified`.
+- `server/src/board/store.ts` — `TaskData` espelhou (opcionais p/ compat com board.json antigo).
+- `server/src/rooms/OfficeRoom.ts` — loader hidrata + persistBoard grava; 3 handlers **guardados por
+  `if (!getFlags().gate) return`**:
+  - `task:deliver` — exige `proof` não-vazio; carimba `deliveredAt` no SERVIDOR; `deliveredBy` = memberId/nome;
+    `verified=false`. **Escrow: não credita nada.**
+  - `task:verify` — sign-off manual → `verified=true` (F2 não credita ponto; isso é F6).
+  - `task:undeliver` — reverte a entrega (engano/retrabalho).
+- `client/src/ui/kanban.ts` — card de "Feito" (flag on) ganha rodapé: **📤 Entregar** → modal (link de prova
+  obrigatório, validado http(s), + nota) → selo **⏳ aguardando verificação** + 🔗 prova + **✓ Verificar**/**↩ Devolver**
+  → selo **✅ Verificado**. `stopPropagation` isola os botões do drag/clique do card.
+
+**Como desligar:** `GAMIF_GATE=0` → some o rodapé de entrega (kanban normal) e o servidor ignora os 3 handlers.
+
+**QA feito (tudo ✅):**
+- Card em "Feito" mostra "📤 Entregar"; card em outras colunas não tem gate.
+- Modal: prova inválida ("isso nao e um link") → erro "Cole um link válido (começa com http…)". Válida → entrega.
+- Entregue → selo "⏳ aguardando verificação", 🔗 prova clicável, "entregue por pedro"; servidor:
+  `delivered=true, verified=false, deliveredBy=pedro, proof/note ok` (escrow, sem creditar).
+- Verificar → "✅ Verificado" verde, sem botões; servidor `verified=true`.
+- Devolver → reverte ao botão "Entregar"; servidor limpo.
+- Clicar no título do card ainda abre o editor (regressão do kanban OK — stopPropagation só na seção de entrega).
+- **OFF** (`GAMIF_GATE=0` via .env temp): card de Feito sem seção de entrega (0 botões); servidor ignora
+  `task:deliver` (delivered continua false). Client E servidor desligados.
+- Voz/movimento intactos (F2 não toca voz; confinado a schema/store/handlers/kanban).
+- Review (general-purpose): aprovado, 0 crítico. Escrow íntegro, sem XSS, flag guarda as 2 pontas.
+
+**Riscos/decisões tomadas sozinho:**
+- **Sub-estados no card de "Feito"** (não novas colunas Entregue/Verificado): menos disruptivo ao board atual,
+  casa com "selo provisório no card de Feito" do prompt. As colunas seguem Backlog/A fazer/Fazendo/Travado/Feito.
+- **`task:verify` manual incluído no F2** (sem creditar) pra o gate ser testável de ponta a ponta. Em F3 a IA
+  vai setar `verified` automaticamente na entrega. Crédito de PE/XP só em F6.
+- **Servidor aceita `proof` não-http** (só exige não-vazio); o link clicável só aparece se for http(s). A DoD do
+  design permite "ID de envio" além de link, então não travei no servidor. Via UI normal sempre vai http(s).
+- **Fail-open do /config** (herdado do F0): se /config falhar no boot, client mostra "Entregar" mas o servidor
+  (autoritativo) faz no-op se o gate estiver off — descasamento transitório de UX, não de dados.
+
+**Ficou de fora:** verificação automática por IA (é o F3); crédito de pontos (é o F6); aceite-automático após N dias
+(não implementado — pode entrar no F6/F9).

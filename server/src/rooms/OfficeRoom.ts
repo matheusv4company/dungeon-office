@@ -5,6 +5,7 @@ import { Player } from "../schema/Player";
 import { Task } from "../schema/Task";
 import { loadBoard, saveBoard, flushBoardSync, type TaskData, type ClientColor } from "../board/store";
 import { flushProgressSync } from "../progress/store";
+import { getFlags } from "../gamification/flags";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; memberId?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -55,6 +56,12 @@ export class OfficeRoom extends Room<OfficeState> {
       t.completedAt = Number(d.completedAt) || 0;
       t.committedDue = Number(d.committedDue) || 0;
       t.dueChanges = Number(d.dueChanges) || 0;
+      t.delivered = !!d.delivered;
+      t.deliveredAt = Number(d.deliveredAt) || 0;
+      t.deliveredBy = String(d.deliveredBy ?? "");
+      t.proof = String(d.proof ?? "");
+      t.deliverNote = String(d.deliverNote ?? "");
+      t.verified = !!d.verified;
       this.state.tasks.set(t.id, t);
     }
     for (const c of board.clients) {
@@ -235,6 +242,49 @@ export class OfficeRoom extends Room<OfficeState> {
       }
     });
 
+    // ---------- F2: gate de entrega (escrow — "Feito" sozinho NAO credita) ----------
+
+    // Entregar ao cliente: exige prova (link). Carimba deliveredAt no SERVIDOR (anti-forja).
+    // Fica "aguardando verificacao" — nenhum ponto e creditado aqui (escrow).
+    this.onMessage("task:deliver", (client, msg: { id?: string; proof?: string; note?: string }) => {
+      if (!getFlags().gate) return; // feature desligada -> no-op
+      const t = this.state.tasks.get(String(msg?.id ?? ""));
+      if (!t || t.col !== "feito") return; // so entrega o que esta em "Feito"
+      const proof = String(msg?.proof ?? "").trim().slice(0, 300);
+      if (!proof) return; // prova obrigatoria (protege o colega: fica registrado que entregou)
+      const p = this.state.players.get(client.sessionId);
+      t.delivered = true;
+      t.deliveredAt = Date.now(); // carimbo autoritativo do servidor
+      t.deliveredBy = (p?.memberId || p?.name || "").slice(0, 60);
+      t.proof = proof;
+      t.deliverNote = String(msg?.note ?? "").trim().slice(0, 280);
+      t.verified = false; // aguarda verificacao (IA em F3 ou sign-off manual)
+      this.persistBoard();
+    });
+
+    // Verificar (sign-off): libera o selo verde. F2 nao credita ponto (isso e F6).
+    this.onMessage("task:verify", (_c, msg: { id?: string }) => {
+      if (!getFlags().gate) return;
+      const t = this.state.tasks.get(String(msg?.id ?? ""));
+      if (!t || !t.delivered) return; // so verifica o que foi entregue
+      t.verified = true;
+      this.persistBoard();
+    });
+
+    // Devolver: reverte a entrega (correcao de engano ou retrabalho pedido).
+    this.onMessage("task:undeliver", (_c, msg: { id?: string }) => {
+      if (!getFlags().gate) return;
+      const t = this.state.tasks.get(String(msg?.id ?? ""));
+      if (!t) return;
+      t.delivered = false;
+      t.verified = false;
+      t.proof = "";
+      t.deliverNote = "";
+      t.deliveredBy = "";
+      t.deliveredAt = 0;
+      this.persistBoard();
+    });
+
     // arquiva todos os cards em "Feito" (somem do board, mas ficam no historico)
     this.onMessage("board:archiveDone", () => {
       let changed = false;
@@ -351,6 +401,12 @@ export class OfficeRoom extends Room<OfficeState> {
         completedAt: t.completedAt,
         committedDue: t.committedDue,
         dueChanges: t.dueChanges,
+        delivered: t.delivered,
+        deliveredAt: t.deliveredAt,
+        deliveredBy: t.deliveredBy,
+        proof: t.proof,
+        deliverNote: t.deliverNote,
+        verified: t.verified,
       });
     });
     const clients: ClientColor[] = [];

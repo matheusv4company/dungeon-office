@@ -1,4 +1,5 @@
 import { getStateCallbacks, type Room } from "../net/room";
+import { getFlags } from "../net/config";
 
 /** Gestor de tarefas (kanban) — overlay HTML compartilhado, sincronizado via Colyseus. */
 
@@ -23,6 +24,12 @@ type TaskView = {
   order: number;
   archived: boolean;
   unit: string; // "" | "ia" | "mkt"
+  // F2 — gate de entrega
+  delivered: boolean;
+  deliveredBy: string;
+  proof: string;
+  deliverNote: string;
+  verified: boolean;
 };
 
 // empresas (categoria IA / Marketing) — rotulo + cor do selo no card
@@ -121,6 +128,22 @@ function injectStyles() {
 .kb-card .meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:#6b7280;}
 .kb-chip{font-size:11px;font-weight:600;border-radius:5px;padding:2px 7px;}
 .kb-late{background:#fee2e2;color:#b91c1c;font-weight:700;border-radius:5px;padding:2px 6px;font-size:11px;}
+/* F2 — gate de entrega no card de "Feito" */
+.kb-gate{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;padding-top:8px;
+  border-top:1px dashed #e5e7eb;}
+.kb-seal{font-size:11px;font-weight:700;border-radius:5px;padding:2px 8px;}
+.kb-seal.wait{background:#e5e7eb;color:#6b7280;}
+.kb-seal.ok{background:#dcfce7;color:#15803d;}
+.kb-gbtn{font:11px system-ui;cursor:pointer;border:none;border-radius:6px;padding:5px 10px;font-weight:600;}
+.kb-gbtn.deliver{background:#2563eb;color:#fff;}
+.kb-gbtn.deliver:hover{background:#1d4ed8;}
+.kb-gbtn.verify{background:#16a34a;color:#fff;}
+.kb-gbtn.undo{background:#f3f4f6;color:#6b7280;}
+.kb-gate a.proof{font-size:11px;color:#2563eb;text-decoration:underline;word-break:break-all;}
+.kb-gate .by{font-size:10px;color:#9ca3af;width:100%;}
+.kb-deliver-hint{font-size:12px;color:#15803d;background:#f0fdf4;border:1px solid #bbf7d0;
+  border-radius:7px;padding:8px 10px;margin-bottom:11px;}
+.kb-err{color:#b91c1c;font-size:12px;margin-top:4px;min-height:14px;}
 .kb-add{margin-top:8px;font:12px system-ui;color:#4b5563;background:#e9eaee;border:none;border-radius:7px;
   padding:7px;cursor:pointer;width:100%;text-align:left;}
 .kb-add:hover{background:#dfe1e6;}
@@ -366,6 +389,8 @@ export class KanbanBoard {
       out.push({
         id: t.id, title: t.title, desc: t.desc, assignee: t.assignee, client: t.client,
         due: t.due, col: t.col, order: t.order, archived: t.archived, unit: t.unit,
+        delivered: !!t.delivered, deliveredBy: t.deliveredBy ?? "", proof: t.proof ?? "",
+        deliverNote: t.deliverNote ?? "", verified: !!t.verified,
       }),
     );
     return out;
@@ -536,8 +561,68 @@ export class KanbanBoard {
     }
     if (meta.childElementCount) card.appendChild(meta);
 
+    // F2 — gate de entrega: só em "Feito" e com o flag ligado.
+    if (getFlags().gate && t.col === "feito" && !t.archived) {
+      card.appendChild(this.buildGateSection(t));
+    }
+
     card.addEventListener("pointerdown", (e) => this.onCardPointerDown(e, card, t));
     return card;
+  }
+
+  /** Bloco de entrega no rodapé do card de "Feito" (Entregar -> aguardando -> Verificado). */
+  private buildGateSection(t: TaskView): HTMLDivElement {
+    const gate = document.createElement("div");
+    gate.className = "kb-gate";
+    // os controles de entrega NÃO podem iniciar o drag nem o clique de editar o card
+    gate.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+    const proofLink = () => {
+      if (!/^https?:\/\//i.test(t.proof)) return null;
+      const a = document.createElement("a");
+      a.className = "proof";
+      a.href = t.proof;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = "🔗 prova";
+      return a;
+    };
+    const gbtn = (label: string, cls: string, onClick: () => void) => {
+      const b = document.createElement("button");
+      b.className = `kb-gbtn ${cls}`;
+      b.textContent = label;
+      b.onclick = onClick;
+      return b;
+    };
+
+    if (t.verified) {
+      const seal = document.createElement("span");
+      seal.className = "kb-seal ok";
+      seal.textContent = "✅ Verificado";
+      gate.appendChild(seal);
+      const l = proofLink();
+      if (l) gate.appendChild(l);
+    } else if (t.delivered) {
+      const seal = document.createElement("span");
+      seal.className = "kb-seal wait";
+      seal.textContent = "⏳ aguardando verificação";
+      gate.appendChild(seal);
+      const l = proofLink();
+      if (l) gate.appendChild(l);
+      gate.appendChild(gbtn("✓ Verificar", "verify", () => this.room.send("task:verify", { id: t.id })));
+      gate.appendChild(gbtn("↩ Devolver", "undo", () => this.room.send("task:undeliver", { id: t.id })));
+      if (t.deliveredBy) {
+        const by = document.createElement("span");
+        by.className = "by";
+        by.textContent = `entregue por ${t.deliveredBy}`;
+        gate.appendChild(by);
+      }
+    } else {
+      gate.appendChild(
+        gbtn("📤 Entregar ao cliente", "deliver", () => this.openDeliverModal(t)),
+      );
+    }
+    return gate;
   }
 
   // ---------- drag por pointer (mouse + touch) ----------
@@ -783,6 +868,77 @@ export class KanbanBoard {
     this.modalBg.appendChild(m);
     this.modalBg.classList.add("open");
     title.focus();
+  }
+
+  // ---------- F2: modal de entrega (link de prova + nota) ----------
+
+  private openDeliverModal(t: TaskView) {
+    this.modalBg.innerHTML = "";
+    const m = document.createElement("div");
+    m.className = "kb-modal";
+    m.onclick = (e) => e.stopPropagation();
+    const h3 = document.createElement("h3");
+    h3.textContent = "📤 Entregar ao cliente";
+    m.appendChild(h3);
+
+    // enquadramento: proteção do colega, não auditoria (decisão do design)
+    const hint = document.createElement("div");
+    hint.className = "kb-deliver-hint";
+    hint.textContent =
+      "Fica registrado que você entregou — se o cliente reclamar, você está coberto. " +
+      "Cole o link da prova: post publicado, arquivo no Drive, ID de envio.";
+    m.appendChild(hint);
+
+    const mk = (label: string, el: HTMLElement) => {
+      const f = document.createElement("div");
+      f.className = "kb-field";
+      const l = document.createElement("label");
+      l.textContent = label;
+      f.append(l, el);
+      m.appendChild(f);
+    };
+    const proof = document.createElement("input");
+    proof.type = "url";
+    proof.placeholder = "https://…";
+    proof.value = t.proof || "";
+    mk("Link da prova de entrega", proof);
+    const note = document.createElement("textarea");
+    note.placeholder = "Nota curta (opcional) — ex: enviei no grupo do cliente às 14h";
+    note.value = t.deliverNote || "";
+    mk("Nota", note);
+    const err = document.createElement("div");
+    err.className = "kb-err";
+    m.appendChild(err);
+
+    const send = () => {
+      const link = proof.value.trim();
+      if (!/^https?:\/\/\S+/i.test(link)) {
+        err.textContent = "Cole um link válido (começa com http:// ou https://).";
+        proof.focus();
+        return;
+      }
+      this.room.send("task:deliver", { id: t.id, proof: link, note: note.value.trim() });
+      this.closeModal();
+    };
+    proof.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") send();
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "kb-modal-actions";
+    const cancel = document.createElement("button");
+    cancel.className = "kb-btn close";
+    cancel.textContent = "Cancelar";
+    cancel.onclick = () => this.closeModal();
+    const ok = document.createElement("button");
+    ok.className = "kb-btn stream";
+    ok.textContent = "📤 Entregar";
+    ok.onclick = send;
+    actions.append(cancel, ok);
+    m.appendChild(actions);
+    this.modalBg.appendChild(m);
+    this.modalBg.classList.add("open");
+    proof.focus();
   }
 
   // ---------- gerenciar listas (clientes / membros): cor + renomear + adicionar ----------

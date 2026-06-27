@@ -17,4 +17,11 @@ export class Task extends Schema {
   @type("number") completedAt = 0; // ms da 1a vez que entrou em "feito" (0 = nunca; sticky)
   @type("number") committedDue = 0; // prazo (ms) congelado ao iniciar ("fazendo"); 0 = sem prazo
   @type("number") dueChanges = 0; // qtas vezes o prazo mudou apos sair do backlog (sinal de gaming)
+  // --- gamificacao F2: gate de entrega (escrow; "Feito" sozinho NAO credita) ---
+  @type("boolean") delivered = false; // entregue ao cliente de verdade (≠ "feito" interno)
+  @type("number") deliveredAt = 0; // ms da entrega (carimbo do SERVIDOR)
+  @type("string") deliveredBy = ""; // quem confirmou a entrega (memberId/nome)
+  @type("string") proof = ""; // link/evidencia verificavel da entrega (clamp 300)
+  @type("string") deliverNote = ""; // nota curta da entrega (clamp 280)
+  @type("boolean") verified = false; // sign-off / verificado (libera o escrow em F3/F6)
 }

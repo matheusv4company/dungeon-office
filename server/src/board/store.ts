@@ -18,6 +18,13 @@ export type TaskData = {
   completedAt?: number;
   committedDue?: number;
   dueChanges?: number;
+  // F2 — gate de entrega
+  delivered?: boolean;
+  deliveredAt?: number;
+  deliveredBy?: string;
+  proof?: string;
+  deliverNote?: string;
+  verified?: boolean;
 };
 
 export type ClientColor = { name: string; color: string };
