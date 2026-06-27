@@ -470,3 +470,49 @@ Todos verificados (server-side determinístico + end-to-end no browser) e re-typ
 
 **Ficou de fora:** regen/escudo (sim-interval + streak); demo de dano em combate real (precisa de 2 jogadores — o
 dono valida abrindo 2 abas e jogando bola de fogo; a lógica `hit` usa attacker.dmg, verificado por código).
+
+---
+
+## F8 — Cosméticos + Celebração ✅ FEITO (⚠️ QA visual pendente — ver nota)
+**Commit:** (ver `git log`) · **Flag:** `GAMIF_COSMETICS` (default ON). **Desligar:** `GAMIF_COSMETICS=0`.
+
+**O que entrou (programático, sem assets novos; sincronizado via `Player.level` do F7):**
+- `client/src/scenes/OfficeScene.ts`:
+  - `cosmeticTitle(level)` — título acima do nome por marco: Lv2-4 "Lv.N", Lv5-7 "Lv.N ⚔", Lv8-9 "Lv.N 🔥",
+    Lv10+ "Lv.N 👑". `cosmeticTint(level)` — dourado suave (0xffe39a) no Lv10+.
+  - Render no update loop (local + REMOTO), SÓ no level-change (guarda `level !== cosLevel`): `nameLabel.setText`
+    + `sprite.setTint/clearTint`. Glória pública (todos veem o título/tint de cada um via level sincronizado).
+  - **Celebração** (`celebrateBurst`): ao verificar entrega, burst VERDE/DOURADO subindo (cura/conquista, distinto
+    do laranja do combate), reusando as partículas `flameDot` + ring; efêmero, `uiCam.ignore`, sem leak.
+  - `onMessage("celebrate")` → burst no mundo (quem está no andar vê); `onMessage("celebrate:self")` → toast
+    "✨ Entrega verificada! +N PE · Nível L" (só pro autor).
+- `server/src/rooms/OfficeRoom.ts` — `creditIfVerified` chama `celebrateDelivery` (gated cosmetics): broadcast
+  "celebrate" {x,y} (todos) + "celebrate:self" {pe,level} (autor).
+
+**Como desligar:** `GAMIF_COSMETICS=0` → nome volta ao base (sem título), sem tint, sem celebração (gate nas 2 pontas).
+
+**QA feito:**
+- Typecheck server+client verde. ✅
+- Review (general-purpose): **aprovado nas 6 frentes** — sem bug bloqueante; **voz/ring de "falando" intocados**
+  (cosmético usa nameLabel+tint, NÃO o ring de voz); gate nas 2 pontas sem resíduo (flags lidos no boot, estáticos);
+  sem conflito de tint (nada mais pinta o sprite — dano é só a barra de HP); loop O(1) fora do level-up; partículas
+  sem leak (uiCam.ignore + destroy). ✅
+- ⚠️ **QA VISUAL DO CANVAS PENDENTE:** o Chrome headless do ambiente de preview **exauriu o contexto WebGL** após
+  muitos restarts/reloads na sessão (cenas pararam de bootar — `scenes:0`), então NÃO consegui screenshot/eval ao
+  vivo dos cosméticos e da celebração. A lógica está verificada (typecheck + review + reusa padrões já testados
+  de label/tint/partículas/toast/onMessage das features anteriores). **Recomendo ao dono validar visualmente** ao
+  testar local: subir 2 abas com 2 membros de níveis diferentes (o título "Lv.N" aparece sobre os dois pra ambos)
+  e verificar uma entrega (burst verde + toast). Se algo destoar, `GAMIF_COSMETICS=0` desliga sem afetar o resto.
+
+**Riscos/decisões tomadas sozinho:**
+- **Cosméticos dirigidos por `Player.level`** (já sincronizado no F7), não por um campo `equippedCosmetic` separado —
+  mais simples e suficiente pra cosméticos por nível. Todos veem (glória pública).
+- **Anel sob os pés + aura/glow + cor da bola de fogo** (da tabela do RESEARCH) ficaram de fora: precisam de objetos
+  por-frame por avatar (mais superfície de canvas + QA). O CORE entregue (título + tint + celebração) dá o loop de
+  recompensa estética visível. Refinamento futuro.
+- **Autor offline na verificação** (ex.: IA aprova enquanto ele saiu) não recebe o burst/toast — efêmero, aceitável;
+  o título/nível públicos atualizam no próximo join (re-hidratação). Documentado pelo review.
+- **Tint só no Lv10+** (prestígio) pra não "sujar" sprites em níveis baixos.
+
+**Ficou de fora:** anel/aura/cor-da-fireball (objetos por-frame); QA visual ao vivo (browser do ambiente morto —
+validação visual fica pro dono).

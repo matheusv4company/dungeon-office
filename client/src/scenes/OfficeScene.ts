@@ -70,7 +70,20 @@ type Remote = {
   hpFill: Phaser.GameObjects.Rectangle;
   hp: number;
   dmgAt: number; // quando levou dano por ultimo (ms da cena); 0 = nunca
+  name: string; // nome-base (sem o título de cosmético), pra recompor o label
+  cosLevel: number; // último nível renderizado no cosmético (-1 = ainda não)
 };
+
+/** F8 — título de cosmético por nível (escassez progressiva). "" = sem título (baseline/flag off). */
+function cosmeticTitle(level: number): string {
+  if (!level || level < 2) return "";
+  const badge = level >= 10 ? "👑 " : level >= 8 ? "🔥 " : level >= 5 ? "⚔ " : "";
+  return `Lv.${level} ${badge}`;
+}
+/** Tint de prestígio (só no topo, pra não "sujar" o sprite nos níveis baixos). null = sem tint. */
+function cosmeticTint(level: number): number | null {
+  return level >= 10 ? 0xffe39a : null; // dourado suave no Lv10+
+}
 
 export class OfficeScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
@@ -147,6 +160,8 @@ export class OfficeScene extends Phaser.Scene {
   private myHp = 100;
   private myMaxHp = 100; // F7 — meu HP máximo (100..120 por nível); a barra usa hp/maxHp
   private myDmgAt = 0;
+  private myName = ""; // F8 — meu nome-base (pra recompor o label com o título de cosmético)
+  private myCosLevel = -1; // F8 — último nível renderizado no meu cosmético
   private deathOverlay?: HTMLDivElement;
 
   // camera/zoom — HUD fica numa camera propria pra NAO escalar com o zoom
@@ -174,6 +189,8 @@ export class OfficeScene extends Phaser.Scene {
   create() {
     const sel = loadSelection();
     this.charIndex = sel.index;
+    this.myName = sel.name || "Convidado"; // F8 — nome-base pro cosmético
+    this.myCosLevel = -1;
     // Identidade de gamificação só quando o login está ligado; senão entra como convidado.
     this.memberId = getFlags().login ? (loadMember()?.memberId ?? "") : "";
     this.remotes.clear();
@@ -559,6 +576,19 @@ export class OfficeScene extends Phaser.Scene {
         });
       },
     );
+    // F8: celebração da entrega verificada — burst no mundo (todos no andar veem) + toast privado.
+    room.onMessage("celebrate", (m: { x?: number; y?: number }) => {
+      if (this.room !== room || !getFlags().cosmetics) return;
+      const x = Number(m?.x);
+      const y = Number(m?.y);
+      if (Number.isFinite(x) && Number.isFinite(y) && floorOfY(y) === this.currentFloor) {
+        this.celebrateBurst(x, y);
+      }
+    });
+    room.onMessage("celebrate:self", (m: { pe?: number; level?: number }) => {
+      if (this.room !== room || !getFlags().cosmetics) return;
+      this.showToast(`✨ Entrega verificada! +${Number(m?.pe ?? 0)} PE · Nível ${Number(m?.level ?? 1)}`, "#15803d", 2600);
+    });
     this.refreshRoster();
     this.showReconnecting(false);
   }
@@ -684,6 +714,8 @@ export class OfficeScene extends Phaser.Scene {
       hpFill,
       hp: typeof player.hp === "number" ? player.hp : 100,
       dmgAt: 0,
+      name: String(player.name ?? ""),
+      cosLevel: -1,
     });
   }
 
@@ -1573,6 +1605,43 @@ export class OfficeScene extends Phaser.Scene {
     this.uiCam?.ignore(burst);
     burst.explode(26);
     this.time.delayedCall(650, () => burst.destroy());
+  }
+
+  /**
+   * F8 — celebração da entrega verificada (juice). Burst VERDE/DOURADO subindo (cura/conquista),
+   * distinto do laranja do combate. Reusa as partículas flameDot. Efêmero, sem feed/spam.
+   */
+  private celebrateBurst(x: number, y: number) {
+    const D = 9600;
+    const ring = this.add
+      .ellipse(x, y - 16, 16, 16, 0x000000, 0)
+      .setStrokeStyle(4, 0x6ee7a0)
+      .setDepth(D);
+    this.uiCam?.ignore(ring);
+    this.tweens.add({
+      targets: ring,
+      scaleX: 5,
+      scaleY: 5,
+      alpha: { from: 0.9, to: 0 },
+      duration: 480,
+      ease: "Quad.out",
+      onComplete: () => ring.destroy(),
+    });
+    const burst = this.add
+      .particles(x, y - 16, "flameDot", {
+        speedY: { min: -150, max: -40 }, // sobe (sensação de cura/conquista)
+        speedX: { min: -60, max: 60 },
+        scale: { start: 0.6, end: 0 },
+        alpha: { start: 1, end: 0 },
+        lifespan: { min: 500, max: 900 },
+        tint: [0x6ee7a0, 0xffe39a, 0xfff3a0], // verde + dourado
+        blendMode: "ADD",
+        emitting: false,
+      })
+      .setDepth(D + 1);
+    this.uiCam?.ignore(burst);
+    burst.explode(22);
+    this.time.delayedCall(950, () => burst.destroy());
   }
 
   // ---------- HP / dano / morte ----------
@@ -2561,6 +2630,14 @@ export class OfficeScene extends Phaser.Scene {
         if (meState.hp < this.myHp) this.myDmgAt = this.time.now;
         this.myHp = meState.hp;
         if (typeof meState.maxHp === "number" && meState.maxHp > 0) this.myMaxHp = meState.maxHp;
+        // F8: cosmético do meu avatar (título no nome + tint de prestígio) — só muda no level-change
+        if (getFlags().cosmetics && typeof meState.level === "number" && meState.level !== this.myCosLevel) {
+          this.myCosLevel = meState.level;
+          this.nameLabel.setText(cosmeticTitle(meState.level) + this.myName);
+          const tint = cosmeticTint(meState.level);
+          if (tint !== null) this.player.setTint(tint);
+          else this.player.clearTint();
+        }
       }
       this.remotes.forEach((r, sid) => {
         const p = state.players?.get(sid);
@@ -2585,6 +2662,14 @@ export class OfficeScene extends Phaser.Scene {
         if (typeof p.hp === "number") {
           if (p.hp < r.hp) r.dmgAt = this.time.now;
           r.hp = p.hp;
+        }
+        // F8: cosmético do remoto (título no nome + tint) — glória pública, só muda no level-change
+        if (getFlags().cosmetics && typeof p.level === "number" && p.level !== r.cosLevel) {
+          r.cosLevel = p.level;
+          r.label.setText(cosmeticTitle(p.level) + r.name);
+          const tint = cosmeticTint(p.level);
+          if (tint !== null) r.sprite.setTint(tint);
+          else r.sprite.clearTint();
         }
         const rMax = typeof p.maxHp === "number" && p.maxHp > 0 ? p.maxHp : 100;
         this.updateHpBar(r.hpBg, r.hpFill, r.sprite.x, r.sprite.y - 44, r.hp, rMax, r.dmgAt, this.time.now, vis);

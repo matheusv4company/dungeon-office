@@ -501,6 +501,18 @@ export class OfficeRoom extends Room<OfficeState> {
     const view = awardPE(who, t.assignee, pe);
     this.sendProgressTo(who, view);
     this.applyStatsTo(who, view.level); // F7: aplica bônus do novo nível ao vivo (level-up cura/sobe stats)
+    if (getFlags().cosmetics) this.celebrateDelivery(who, pe, view.level); // F8: juice da entrega verificada
+  }
+
+  /** F8 — celebração da entrega verificada: burst no mundo (glória pública) + toast privado pro autor. */
+  private celebrateDelivery(memberId: string, pe: number, level: number) {
+    for (const c of this.clients) {
+      const p = this.state.players.get(c.sessionId);
+      if (p?.memberId !== memberId) continue;
+      this.broadcast("celebrate", { x: Math.round(p.x), y: Math.round(p.y) }); // todos perto/no andar veem
+      c.send("celebrate:self", { pe, level }); // toast só pro autor
+      return; // posição é a mesma entre sessões do mesmo membro
+    }
   }
 
   /** Manda o progresso atualizado pro cliente daquele membro, se online (HUD privado). */
