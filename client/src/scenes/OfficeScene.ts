@@ -483,6 +483,14 @@ export class OfficeScene extends Phaser.Scene {
     room.onMessage("died", () => {
       if (this.room === room) this.onDied();
     });
+    // F3: feedback PRIVADO da IA sobre a MINHA entrega (só eu recebo). Toast acima do kanban.
+    room.onMessage(
+      "ai:feedback",
+      (m: { status?: string; score?: number; note?: string }) => {
+        if (this.room !== room) return;
+        this.showAiFeedback(String(m?.status ?? ""), Number(m?.score ?? -1), String(m?.note ?? ""));
+      },
+    );
     this.refreshRoster();
     this.showReconnecting(false);
   }
@@ -1191,6 +1199,43 @@ export class OfficeScene extends Phaser.Scene {
       "box-shadow:0 6px 24px #000a;pointer-events:none;";
     document.body.appendChild(t);
     this.time.delayedCall(ms, () => t.remove());
+  }
+
+  /**
+   * F3 — feedback PRIVADO da IA sobre a minha entrega. Banner no topo, acima do kanban
+   * (z-index alto), cor por status, sumindo em ~10s ou ao clicar. Só EU recebo (vergonha
+   * privada): nota baixa/parcial nunca aparece pra ninguém além do responsável.
+   */
+  private showAiFeedback(status: string, score: number, note: string) {
+    const meta: Record<string, { bg: string; icon: string; head: string }> = {
+      verified: { bg: "#15803d", icon: "✅", head: "IA aprovou sua entrega" },
+      partial: { bg: "#b45309", icon: "🛠️", head: "Quase lá — a IA achou que falta um pouco" },
+      low: { bg: "#9f5fb0", icon: "✋", head: "A IA achou que falta bastante (só você vê isto)" },
+      unavailable: { bg: "#475569", icon: "📤", head: "Entregue! Avaliação da IA indisponível agora" },
+    };
+    const m = meta[status] ?? meta.unavailable;
+    const scoreStr = score >= 0 ? ` (${score}/10)` : "";
+    const body =
+      status === "unavailable"
+        ? "Sua entrega ficou registrada. Peça uma verificação manual a alguém do time."
+        : note || "(sem comentário)";
+    const el = document.createElement("div");
+    el.style.cssText =
+      "position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:10080;max-width:min(440px,92vw);" +
+      `background:${m.bg};color:#fff;font:13px/1.45 system-ui,Segoe UI;padding:12px 16px;border-radius:10px;` +
+      "box-shadow:0 8px 30px #000b;cursor:pointer;";
+    const h = document.createElement("div");
+    h.style.cssText = "font-weight:700;margin-bottom:3px;";
+    h.textContent = `${m.icon} ${m.head}${scoreStr}`;
+    const p = document.createElement("div");
+    p.textContent = body;
+    const tip = document.createElement("div");
+    tip.style.cssText = "font-size:11px;opacity:.75;margin-top:5px;";
+    tip.textContent = "clique para fechar";
+    el.append(h, p, tip);
+    el.onclick = () => el.remove();
+    document.body.appendChild(el);
+    this.time.delayedCall(10000, () => el.remove());
   }
 
   private playBeep() {

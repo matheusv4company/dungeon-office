@@ -27,6 +27,8 @@ export type TaskData = {
   verified?: boolean;
   verifiedBy?: string;
   verifiedAt?: number;
+  aiScore?: number;
+  aiNote?: string;
 };
 
 export type ClientColor = { name: string; color: string };

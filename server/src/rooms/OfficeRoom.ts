@@ -6,6 +6,7 @@ import { Task } from "../schema/Task";
 import { loadBoard, saveBoard, flushBoardSync, type TaskData, type ClientColor } from "../board/store";
 import { flushProgressSync } from "../progress/store";
 import { getFlags } from "../gamification/flags";
+import { reviewDelivery } from "../gamification/aiReview";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; memberId?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -64,6 +65,8 @@ export class OfficeRoom extends Room<OfficeState> {
       t.verified = !!d.verified;
       t.verifiedBy = String(d.verifiedBy ?? "");
       t.verifiedAt = Number(d.verifiedAt) || 0;
+      t.aiScore = typeof d.aiScore === "number" ? d.aiScore : -1;
+      t.aiNote = String(d.aiNote ?? "");
       this.state.tasks.set(t.id, t);
     }
     for (const c of board.clients) {
@@ -263,6 +266,8 @@ export class OfficeRoom extends Room<OfficeState> {
       t.deliverNote = String(msg?.note ?? "").trim().slice(0, 280);
       t.verified = false; // aguarda verificacao (IA em F3 ou sign-off manual)
       this.persistBoard();
+      // F3: avaliacao da IA em segundo plano (nao bloqueia o board). So se o flag estiver on.
+      if (getFlags().aiReview) void this.runAiReview(t.id, client.sessionId);
     });
 
     // Verificar (sign-off): libera o selo verde + carimba QUEM verificou (anti-forja simetrico;
@@ -401,6 +406,51 @@ export class OfficeRoom extends Room<OfficeState> {
     t.deliveredAt = 0;
     t.verifiedBy = "";
     t.verifiedAt = 0;
+    t.aiScore = -1;
+    t.aiNote = "";
+  }
+
+  /**
+   * F3 — avalia a entrega com a IA (Haiku) em 2o plano. NUNCA trava o board: reviewDelivery
+   * trata timeout/erro/sem-chave devolvendo null. >=7 verifica (libera o escrow) e publica a
+   * nota; 4-6 e <4 NAO verificam e o feedback vai SEMPRE PRIVADO pro responsavel (vergonha
+   * privada). Sem avaliacao -> deixa em escrow pro sign-off manual (degrada como o F2).
+   */
+  private async runAiReview(taskId: string, sessionId: string) {
+    const t0 = this.state.tasks.get(taskId);
+    if (!t0) return;
+    // snapshot pro prompt (a tarefa pode mudar enquanto a IA pensa)
+    const result = await reviewDelivery({
+      title: t0.title,
+      desc: t0.desc,
+      client: t0.client,
+      unit: t0.unit,
+      proof: t0.proof,
+      note: t0.deliverNote,
+    });
+    // re-busca: pode ter sido devolvida/movida/deletada enquanto a IA pensava -> ignora tardio
+    const t = this.state.tasks.get(taskId);
+    if (!t || !t.delivered || t.col !== "feito" || t.verified) return;
+    const client = this.clients.find((c) => c.sessionId === sessionId);
+    if (!result) {
+      // degradou: entrega fica em escrow (verificacao manual). Avisa so o responsavel.
+      client?.send("ai:feedback", { status: "unavailable", score: -1, note: "" });
+      return;
+    }
+    if (result.score >= 7) {
+      // aprovado: gloria publica — verifica e mostra a nota a todos
+      t.verified = true;
+      t.verifiedBy = "IA";
+      t.verifiedAt = Date.now();
+      t.aiScore = result.score;
+      t.aiNote = result.note;
+      this.persistBoard();
+      client?.send("ai:feedback", { status: "verified", score: result.score, note: result.note });
+    } else {
+      // 4-6 (parcial) ou <4 (baixo): NAO verifica; feedback PRIVADO, nada publico no card
+      const status = result.score >= 4 ? "partial" : "low";
+      client?.send("ai:feedback", { status, score: result.score, note: result.note });
+    }
   }
 
   /** Serializa o board atual (tarefas + cores de cliente/membro) e agenda a gravacao. */
@@ -430,6 +480,8 @@ export class OfficeRoom extends Room<OfficeState> {
         verified: t.verified,
         verifiedBy: t.verifiedBy,
         verifiedAt: t.verifiedAt,
+        aiScore: t.aiScore,
+        aiNote: t.aiNote,
       });
     });
     const clients: ClientColor[] = [];

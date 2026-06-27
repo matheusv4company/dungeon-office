@@ -193,3 +193,55 @@ e tratados. **Commit das correções:** (ver `git log` — "fix(gamificacao): ha
   socialmente detectável). Não mexi sozinho no modelo de auth à noite — é chamada de produto do dono.
 - **Fail-open do `/config`** (F0): se `/config` falha no boot, o cliente assume tudo-ON; o servidor (autoritativo)
   ainda faz no-op nos handlers desligados. Descasamento transitório de UX, não de dados. Aceitável.
+
+---
+
+## F3 — Nota da IA (Haiku 4.5) ✅ FEITO
+**Commit:** (ver `git log`) · **Flag:** `GAMIF_AIREVIEW` (default ON). **Desligar:** `GAMIF_AIREVIEW=0`.
+
+**O que entrou:**
+- `server/src/gamification/aiReview.ts` (novo) — `reviewDelivery({title,desc,client,unit,proof,note})` chama
+  Haiku 4.5 (`claude-haiku-4-5-20251001`) com a Definition of Done + dados da entrega → `{score 0-10, note}`.
+  **Degrada sempre pra `null`** (sem chave, erro de API, timeout 12s, parse ruim) — NUNCA lança. A
+  `ANTHROPIC_API_KEY` é lida do ambiente e **nunca logada** (o catch loga só `error.message`).
+- `server/src/rooms/OfficeRoom.ts` — no `task:deliver`, se `GAMIF_AIREVIEW` on, dispara `runAiReview` em
+  **2º plano** (fire-and-forget, não bloqueia o board). `runAiReview` re-busca a tarefa antes de aplicar
+  (ignora resultado tardio se foi devolvida/movida/já verificada):
+  - **score >= 7** → `verified=true`, `verifiedBy="IA"`, `aiScore`/`aiNote` PÚBLICOS (glória) + toast privado positivo.
+  - **4-6 (parcial) / <4 (baixo)** → NÃO verifica; `aiScore` fica -1 (card neutro "aguardando", sem nota pública);
+    feedback **SEMPRE PRIVADO** ao responsável via `client.send("ai:feedback")`.
+  - **null (degradou)** → fica em escrow (verificação manual, igual F2) + toast privado "IA indisponível".
+- `Task`: `aiScore` (-1=não avaliada; 0-10 só quando aprovou) + `aiNote` (justificativa pública). Espelhados em
+  store/loader/persist; `resetDelivery` também os zera.
+- `client/src/ui/kanban.ts` — selo verde mostra "✅ Verificado · IA X/10" (+ justificativa no hover) quando a IA aprovou.
+- `client/src/scenes/OfficeScene.ts` — `room.onMessage("ai:feedback")` → `showAiFeedback`: banner PRIVADO no topo,
+  **z-index 10080 (acima do kanban)**, cor por status (verde/âmbar/roxo/cinza), some em 10s ou ao clicar.
+- SDK: `@anthropic-ai/sdk@^0.106.0` em `server` (import dinâmico → compila pra `require`; **testado no build de prod**).
+
+**Como desligar:** `GAMIF_AIREVIEW=0` → `task:deliver` não chama a IA; entrega cai no fluxo manual do F2 (sign-off
+no botão "✓ Verificar"). Igual ao comportamento sem chave.
+
+**QA feito (tudo ✅):**
+- Entrega BOA ("Landing page... publicada", desc completa) → IA deu **9/10** → card auto-verificado
+  "✅ Verificado · IA 9/10" (público) + toast verde privado "IA aprovou (9/10)".
+- Entrega RUIM ("coisa", desc vazia) → IA deu nota baixa → card fica **neutro "⏳ aguardando"** (sem nota pública),
+  feedback foi **privado** ao Pedro. Vergonha privada preservada.
+- **Sem chave:** `reviewDelivery` → `null` (degrada, sem lançar). Testado isolado.
+- **Build de prod (`node dist`):** chamada real ao Haiku retornou nota → import dinâmico (require) funciona em prod.
+- Toast privado renderiza ACIMA do kanban (z-index 10080) — screenshot.
+- Board nunca trava: deliver é síncrono, IA roda async com timeout 12s + try/catch.
+- **OFF (`GAMIF_AIREVIEW=0`):** coberto por composição — a guarda `if (getFlags().aiReview)` é o mesmo padrão do
+  `gate` (testado OFF) e o teste **sem chave** já exercita o MESMO comportamento observável (escrow manual, sem
+  auto-verify, sem nota pública). Para desligar de fato: `GAMIF_AIREVIEW=0`.
+
+**Riscos/decisões tomadas sozinho:**
+- **Privacidade da nota:** `aiScore`/`aiNote` no schema sincronizado só são preenchidos quando a IA APROVA (>=7).
+  Nota baixa/parcial NUNCA vai pro schema público — só pro toast privado do responsável. Respeita "vergonha privada".
+- **Degradação = deixa PENDENTE** (escrow manual), não credita provisoriamente. Mais seguro: nada é "aprovado" sem
+  avaliação real. O sign-off manual (F2) continua disponível.
+- **A IA não abre o link de prova** (é chamada server-side de texto). O prompt deixa isso explícito; a nota é um
+  sinal heurístico de completude, com o humano podendo dar/!dar o sign-off manual por cima.
+- **`verifiedBy="IA"`** distingue verificação automática de sign-off humano (útil pro F6/anomalias).
+
+**Ficou de fora:** crédito de PE/XP (F6 — hoje verified só libera o selo); reavaliação ao reentregar é automática
+(novo deliver dispara nova IA).

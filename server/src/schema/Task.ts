@@ -26,4 +26,7 @@ export class Task extends Schema {
   @type("boolean") verified = false; // sign-off / verificado (libera o escrow em F3/F6)
   @type("string") verifiedBy = ""; // quem deu o sign-off (carimbo do servidor; anti-conluio em F6)
   @type("number") verifiedAt = 0; // ms do sign-off (carimbo do servidor)
+  // --- gamificacao F3: nota da IA (so PUBLICA quando aprovou; nota baixa fica privada) ---
+  @type("number") aiScore = -1; // -1 = nao avaliada; 0-10 = nota (so preenchida se a IA aprovou)
+  @type("string") aiNote = ""; // justificativa PUBLICA (so para entrega aprovada pela IA)
 }

@@ -30,6 +30,9 @@ type TaskView = {
   proof: string;
   deliverNote: string;
   verified: boolean;
+  // F3 — nota da IA (pública só quando aprovada)
+  aiScore: number;
+  aiNote: string;
 };
 
 // empresas (categoria IA / Marketing) — rotulo + cor do selo no card
@@ -391,6 +394,7 @@ export class KanbanBoard {
         due: t.due, col: t.col, order: t.order, archived: t.archived, unit: t.unit,
         delivered: !!t.delivered, deliveredBy: t.deliveredBy ?? "", proof: t.proof ?? "",
         deliverNote: t.deliverNote ?? "", verified: !!t.verified,
+        aiScore: typeof t.aiScore === "number" ? t.aiScore : -1, aiNote: t.aiNote ?? "",
       }),
     );
     return out;
@@ -601,7 +605,9 @@ export class KanbanBoard {
     if (t.verified) {
       const seal = document.createElement("span");
       seal.className = "kb-seal ok";
-      seal.textContent = "✅ Verificado";
+      // mostra a nota da IA quando ela aprovou (glória pública); senão só "Verificado"
+      seal.textContent = t.aiScore >= 0 ? `✅ Verificado · IA ${t.aiScore}/10` : "✅ Verificado";
+      if (t.aiNote) seal.title = t.aiNote; // justificativa da IA no hover
       gate.appendChild(seal);
       const l = proofLink();
       if (l) gate.appendChild(l);
