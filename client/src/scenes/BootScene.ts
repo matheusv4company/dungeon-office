@@ -1,5 +1,7 @@
 import Phaser from "phaser";
 import { CHARACTERS, charKey } from "../characters";
+import { loadConfig, getFlags } from "../net/config";
+import { registerGam } from "../dev/gam";
 
 const WEAPONS = [
   "long_sword1",
@@ -82,8 +84,13 @@ export class BootScene extends Phaser.Scene {
     );
   }
 
-  create() {
-    console.log("[BootScene] assets carregados -> seleção");
+  async create() {
+    // Busca os feature flags da gamificacao (GET /config) ANTES de qualquer feature agir.
+    // Se falhar, getFlags() devolve tudo ligado (default do servidor) — boot nao trava.
+    await loadConfig();
+    // Em dev, deixa os flags inspecionaveis no console (window.__gam.flags).
+    registerGam({ flags: getFlags, reloadConfig: loadConfig });
+    console.log("[BootScene] assets carregados -> seleção", getFlags());
     this.scene.start("select");
   }
 }

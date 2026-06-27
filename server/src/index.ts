@@ -8,6 +8,7 @@ import { AccessToken } from "livekit-server-sdk";
 import { OfficeRoom } from "./rooms/OfficeRoom";
 import { loadBoard } from "./board/store";
 import { login } from "./progress/store";
+import { getFlags } from "./gamification/flags";
 
 // Carrega server/.env (chaves do LiveKit), se existir. Node 20.12+/26.
 try {
@@ -32,6 +33,12 @@ app.use((_req, res, next) => {
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, voice: voiceReady });
+});
+
+// Feature flags da gamificacao — o cliente le isto no boot e so liga cada feature
+// se o flag estiver on. O dono desliga qualquer coisa setando GAMIF_X=0 no Coolify.
+app.get("/config", (_req, res) => {
+  res.json({ flags: getFlags() });
 });
 
 // Token do LiveKit (assinado com a Secret — nunca exposta ao cliente).
