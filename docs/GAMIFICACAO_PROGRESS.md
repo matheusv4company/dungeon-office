@@ -67,3 +67,50 @@ stats, cosmetics, social` + master `GAMIF_ALL`.
   do Vite (testado: não resolvia). localhost é confiável e em prod fica off.
 
 **Ficou de fora:** nada do escopo do F0.
+
+---
+
+## F1 — Tela de login (membro + PIN) ✅ FEITO
+**Commit:** (ver `git log`) · **Flag:** `GAMIF_LOGIN` (default ON). **Desligar:** `GAMIF_LOGIN=0`.
+
+**O que entrou:**
+- `client/src/auth/login.ts` (novo) — `fetchMembers()` (GET /members), `login(member,pin)` (POST /login),
+  `loadMember/saveMember/clearMember` (localStorage `ev_member` = {memberId, displayName}).
+- `client/src/net/room.ts` — `JoinOpts` ganhou `memberId?`.
+- `client/src/scenes/CharacterSelectScene.ts` (reescrito) — gate por `getFlags().login`:
+  - **OFF** → método `buildNameInput()` = a tela antiga de nome livre, byte-a-byte.
+  - **ON** → painel DOM com 3 modos: **welcome** (relogin automático, sem PIN, + "Trocar de pessoa"),
+    **login** (dropdown de membro + PIN 4-8 díg + "entrar como convidado"), **guest** (nome livre, sem progresso).
+    Painel ancorado pela base (cresce pra cima), `escapeHtml()` nos nomes.
+- `client/src/scenes/OfficeScene.ts` — campo `memberId`; em `create()`: `this.memberId =
+  getFlags().login ? (loadMember()?.memberId ?? "") : ""`; passa `memberId` nos dois `joinOffice`
+  (conexão inicial + reconexão). O servidor (OfficeRoom) já lia `options.memberId`.
+
+**Como desligar:** `GAMIF_LOGIN=0` no Coolify → volta ao campo de nome livre. memberId sempre "" (convidado).
+
+**QA feito (tudo ✅):**
+- Painel renderiza (dropdown Pedro/Ana + PIN). Validação: PIN vazio/curto → "O PIN tem de 4 a 8 dígitos".
+- **Criar:** Pedro/1234 → cria PIN (server: relogin 1234=ok, 9999=wrong, abc=invalid; hash nunca exposto),
+  `ev_member` salvo, `memberId=pedro` chega ao Player no servidor.
+- **Relogin automático:** reload → "Bem-vindo de volta, Pedro!" sem PIN.
+- **Trocar de pessoa:** limpa `ev_member` → volta ao login.
+- **PIN errado:** "PIN incorreto — tenta de novo 🙂", fica no select.
+- **Convidado:** `ev_member` nulo, `memberId=""` no servidor (sem progresso).
+- **Mobile** (375x812): grid 3 colunas + painel cabem; responsivo.
+- **OFF** (`GAMIF_LOGIN=0` via .env temporário): volta ao campo de nome livre, sem erro de console.
+- **Regressão do núcleo:** logado como Pedro → escritório conecta, nome "Pedro", charId/hp ok, botões
+  Voz/Compartilhar/Gestor/Microfone/Mão presentes, mundo renderiza, 0 erro de console. Voz NÃO foi tocada.
+- Review (general-purpose): aprovado, 0 bloqueante. Voz intocada, OFF equivalente, sem XSS explorável
+  (escapeHtml cobre texto e atributos com aspas duplas), PIN não vaza.
+
+**Riscos/decisões tomadas sozinho:**
+- **Dropdown só de membros do board** (GET /members). Quem não está na lista entra como convidado
+  (ou o admin cadastra no kanban). Dentro do escopo do prompt.
+- **Lista vazia** (servidor fora): foca o PIN e o link de convidado fica visível — ninguém trava.
+- **`<style id="ev-login-styles">`** fica no `<head>` após o login (idempotente, inócuo, só no caminho ON).
+- **QA do clique em DOM do Phaser:** `preview_click` por coordenada pode acertar o elemento errado
+  (DOM transformado do Phaser). Usei `element.click()` via `preview_eval` (confiável). Clique real do
+  usuário roteia certo (browser faz hit-test no elemento visível). NÃO é bug de produto.
+
+**Ficou de fora:** nada do escopo do F1. (Re-render por mudança de flag pós-boot não é necessário —
+BootScene faz `await loadConfig()` antes de abrir a tela.)

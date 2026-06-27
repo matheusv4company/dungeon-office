@@ -4,6 +4,8 @@ import { joinOffice, getStateCallbacks } from "../net/room";
 import type { Room } from "../net/room";
 import { VoiceManager } from "../net/voice";
 import { KanbanBoard } from "../ui/kanban";
+import { loadMember } from "../auth/login";
+import { getFlags } from "../net/config";
 
 const T = 32;
 const COLS = 30;
@@ -75,6 +77,7 @@ export class OfficeScene extends Phaser.Scene {
   private keys!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
   private obstacles: Phaser.GameObjects.GameObject[] = [];
   private charIndex = 0;
+  private memberId = ""; // identidade durável de gamificação (vazio = convidado)
   private nameLabel!: Phaser.GameObjects.Text;
 
   // multiplayer
@@ -161,6 +164,8 @@ export class OfficeScene extends Phaser.Scene {
   create() {
     const sel = loadSelection();
     this.charIndex = sel.index;
+    // Identidade de gamificação só quando o login está ligado; senão entra como convidado.
+    this.memberId = getFlags().login ? (loadMember()?.memberId ?? "") : "";
     this.remotes.clear();
     this.room = undefined;
     this.obstacles = [];
@@ -409,7 +414,7 @@ export class OfficeScene extends Phaser.Scene {
     }, 700);
 
     try {
-      const room = await joinOffice({ name, charId: this.charIndex, x, y });
+      const room = await joinOffice({ name, charId: this.charIndex, x, y, memberId: this.memberId });
       this.setupVoiceButton();
       this.setupShareButton();
       this.setupGestorButton();
@@ -535,7 +540,7 @@ export class OfficeScene extends Phaser.Scene {
       this.reconnecting = false;
       if (this.leaving || this.room) return;
       try {
-        const room = await joinOffice({ name, charId: this.charIndex, x, y });
+        const room = await joinOffice({ name, charId: this.charIndex, x, y, memberId: this.memberId });
         if (this.leaving) {
           try {
             room.leave();
