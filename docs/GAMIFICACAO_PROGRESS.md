@@ -519,6 +519,32 @@ validação visual fica pro dono).
 
 ---
 
+## NE — Nova Era (mudança estética) ✅ FEITO (⚠️ QA visual pendente)
+**Flag:** `GAMIF_NOVA_ERA` (default ON). **Desligar:** `GAMIF_NOVA_ERA=0`. Anuncia a nova fase com 3 set pieces
+(paleta ciano+violeta arcano-tech, aprovada por mockup). Tudo programático (sem assets novos).
+
+**O que entrou** (`client/src/scenes/OfficeScene.ts`, gated por `getFlags().novaEra`):
+- **O Núcleo** (`addNucleo`) — pilar de energia neon sobre base de pedra, NO LUGAR da mesa redonda da Sala de
+  Reunião. Mantém colisão equivalente à mesa (hitbox 92×52, até um pouco menor).
+- **A Cripta ascendeu** — a escuridão clareia (azul-tech `0x0a1626` @0.78 em vez de quase-preto @0.96, no update +
+  bg do andar) e 6 **gadgets modernos** (`addCryptGadget`: laptop/server/holo/drone/phone/panel) espalhados, que
+  viram **fontes de luz** (`cryptLights`) — brilham no escuro. Sem colisão (não prendem o player).
+- **O Cristal da Guilda** (`addGuildCrystal`) — cristal arcano facetado na praia, canto inferior-esquerdo (diagonal
+  oposta ao sol). Triângulos com `setOrigin(0,0)` + glows + shards. Só visual (reatividade ao XP fica pra depois,
+  por decisão do dono). Colisão leve 44×26.
+- Flag em `server/src/gamification/flags.ts` + `client/src/net/config.ts`.
+
+**Como desligar:** `GAMIF_NOVA_ERA=0` → mesa de reunião de volta, cripta escura como antes, sem cristal/gadgets,
+bg `#050409`. 100% reversível (cada uso gated com else que restaura o baseline).
+
+**QA feito:** typecheck verde; review **aprovado nas 7 frentes** — voz por proximidade INTOCADA; reversibilidade
+exata; sem vazamento (emitters/tweens no padrão dos braseiros, escondidos por andar via floorObjs); uiCam ok (não
+vão pro HUD); colisões equivalentes/menores que o baseline. ⚠️ **QA VISUAL PENDENTE** (WebGL do Chrome headless
+exausto) — validar no teste local: Sala de Reunião (Núcleo passa confortável?), Cripta (gadgets + clareada?), Praia
+(cristal no canto inferior-esquerdo?). Se destoar: `GAMIF_NOVA_ERA=0`.
+
+---
+
 # 🏁 ESTADO FINAL DA SESSÃO (para o dono)
 
 **Entregue:** F0–F8 (todo o core). F9 (social/coop) NÃO foi feito (opcional, "se sobrar tempo"; o browser de QA
@@ -558,6 +584,7 @@ Desligar = setar a env no Coolify (= `0`) e redeploy — **sem rebuild, sem reve
 | F6 progressão PE/XP/nível | `GAMIF_PROGRESSION=0` | `9ab23ba` |
 | F7 stats upside-only | `GAMIF_STATS=0` | `9908c8b` |
 | F8 cosméticos + celebração | `GAMIF_COSMETICS=0` | `f443af1` |
+| NE nova era (Núcleo/cripta/cristal) | `GAMIF_NOVA_ERA=0` | (ver `git log`) |
 | **TUDO (kill switch)** | `GAMIF_ALL=0` | — |
 | Correções dos reviews | — | `853deb8` (F0-F2), `81fb738` (F3), `d143a79` (F6) |
 

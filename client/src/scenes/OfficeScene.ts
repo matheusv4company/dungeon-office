@@ -1730,6 +1730,77 @@ export class OfficeScene extends Phaser.Scene {
     this.obstacles.push(tbl);
   }
 
+  /**
+   * NE — "O Núcleo": pilar de energia neon (ciano+violeta) sobre base de pedra, no lugar
+   * da mesa de reunião. Símbolo central da nova fase. Mantém a colisão que a mesa tinha.
+   * Tudo programático; criado dentro do buildFloorInto, então a uiCam já ignora.
+   */
+  private addNucleo(x: number, y: number) {
+    const CY = 0x6ee7ff;
+    const VI = 0x9a7bff;
+    // brilho no chão (halos translúcidos, ADD)
+    const halo = this.add
+      .ellipse(x, y, 150, 150, CY, 0.1)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(0.5);
+    this.add.ellipse(x, y, 96, 90, VI, 0.1).setBlendMode(Phaser.BlendModes.ADD).setDepth(0.5);
+    // anéis no piso (um expande e some em loop)
+    const ring = this.add.ellipse(x, y + 8, 96, 30).setStrokeStyle(2, CY, 0.5).setDepth(0.45);
+    this.add.ellipse(x, y + 8, 70, 22).setStrokeStyle(1, CY, 0.28).setDepth(0.45);
+    // base de pedra/metal
+    this.add.ellipse(x, y + 6, 66, 24, 0x23202e).setStrokeStyle(2, 0x4a4660).setDepth(y);
+    this.add.ellipse(x, y + 2, 50, 17, 0x16141f).setStrokeStyle(1, 0x3a3650).setDepth(y);
+    // coluna de energia (sobe da base)
+    const colTop = y - 92;
+    const colY = (y + 2 + colTop) / 2;
+    const colH = y + 2 - colTop;
+    this.add.rectangle(x, colY, 26, colH, CY, 0.3).setBlendMode(Phaser.BlendModes.ADD).setDepth(y + 1);
+    this.add.rectangle(x, colY, 14, colH, CY, 0.85).setDepth(y + 1);
+    this.add.rectangle(x, colY, 6, colH, 0xeaffff).setDepth(y + 2);
+    // orbe no topo
+    const orb = this.add.ellipse(x, colTop, 28, 28, CY).setBlendMode(Phaser.BlendModes.ADD).setDepth(y + 2);
+    this.add.ellipse(x, colTop, 14, 14, 0xeaffff).setDepth(y + 3);
+    // pulsações
+    this.tweens.add({
+      targets: [halo, orb],
+      alpha: { from: 0.7, to: 1 },
+      scaleX: { from: 0.94, to: 1.08 },
+      scaleY: { from: 0.94, to: 1.08 },
+      duration: 1100,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.inOut",
+    });
+    this.tweens.add({
+      targets: ring,
+      scaleX: { from: 0.85, to: 1.2 },
+      scaleY: { from: 0.85, to: 1.2 },
+      alpha: { from: 0.5, to: 0 },
+      duration: 1900,
+      repeat: -1,
+      ease: "Quad.out",
+    });
+    // partículas de energia subindo
+    this.add
+      .particles(x, y - 2, "flameDot", {
+        x: { min: -10, max: 10 },
+        y: { min: -6, max: 6 },
+        speedY: { min: -70, max: -34 },
+        scale: { start: 0.4, end: 0 },
+        alpha: { start: 0.9, end: 0 },
+        lifespan: { min: 700, max: 1200 },
+        frequency: 90,
+        quantity: 1,
+        tint: [CY, VI, 0xeaffff],
+        blendMode: "ADD",
+      })
+      .setDepth(y + 3);
+    // colisão (como a mesa redonda tinha)
+    const hb = this.add.rectangle(x, y, 92, 52).setVisible(false);
+    this.physics.add.existing(hb, true);
+    this.obstacles.push(hb);
+  }
+
   private addProp(c: number, r: number, key: string) {
     const x = c * T + T / 2;
     const y = r * T + T / 2;
@@ -1931,7 +2002,8 @@ export class OfficeScene extends Phaser.Scene {
       this.addChair(d);
       this.addDesk(d);
     }
-    this.addRoundTable(4.7 * T, 3.4 * T + o, 3.4 * T, 2.2 * T);
+    if (getFlags().novaEra) this.addNucleo(4.7 * T, 3.4 * T + o); // NE: O Núcleo (substitui a mesa de reunião)
+    else this.addRoundTable(4.7 * T, 3.4 * T + o, 3.4 * T, 2.2 * T);
 
     const decor: Decor[] = [
       [12, oy, "w_long_sword1"],
@@ -2066,6 +2138,9 @@ export class OfficeScene extends Phaser.Scene {
     ];
     for (const [c, r] of stars) this.addStarfish(c, r);
 
+    // NE: O Cristal da Guilda — canto inferior-esquerdo, diagonal oposta ao sol (topo-direito)
+    if (getFlags().novaEra) this.addGuildCrystal(3 * T, 12.4 * T);
+
     // glints de sol flutuando pela areia (vida/movimento)
     this.add
       .particles(0, 0, "flameDot", {
@@ -2121,6 +2196,88 @@ export class OfficeScene extends Phaser.Scene {
       repeat: -1,
       ease: "Sine.inOut",
     });
+  }
+
+  /**
+   * NE — "O Cristal da Guilda": cristal arcano facetado (ciano+violeta) na areia, no canto
+   * oposto ao sol. Brilho frio contrastando o calor dourado do sol. Só visual por enquanto
+   * (reatividade ao XP do time fica pra depois). Criado no buildBeach (andar 0).
+   * Triângulos com setOrigin(0,0) => pontos renderizam exatamente em (x+px, y+py).
+   */
+  private addGuildCrystal(x: number, y: number) {
+    const CY = 0x6ee7ff;
+    const VI = 0x9a7bff;
+    const tri = (pts: number[], color: number, depth: number) =>
+      this.add.triangle(x, y, pts[0], pts[1], pts[2], pts[3], pts[4], pts[5], color).setOrigin(0, 0).setDepth(depth);
+    // poça de luz na areia + halo (ADD)
+    this.add.ellipse(x, y + 28, 110, 26, CY, 0.18).setBlendMode(Phaser.BlendModes.ADD).setDepth(0.9);
+    const halo = this.add
+      .ellipse(x, y - 6, 150, 150, VI, 0.08)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(0.92);
+    // base de cristal escura
+    this.add.ellipse(x, y + 28, 48, 14, 0x2a2440).setStrokeStyle(2, 0x4a4070).setDepth(y + 28);
+    // facetas (topo em -58, base em +28)
+    tri([0, -58, -24, -8, -3, 28], 0x3ac6ff, y + 1).setStrokeStyle(1, 0xcde9ff, 0.5); // esquerda (ciano)
+    tri([0, -58, 24, -8, 3, 28], 0x7b6ef0, y + 1).setStrokeStyle(1, 0xcde9ff, 0.5); // direita (violeta)
+    tri([0, -58, -7, 28, 7, 28], 0x9be9ff, y + 2); // centro (claro)
+    tri([0, -58, -3, -8, 3, -8], 0xeaffff, y + 3); // aresta de brilho
+    // núcleo brilhante (pulsa)
+    const core = this.add
+      .ellipse(x, y - 8, 14, 34, 0xeaffff, 0.8)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(y + 2);
+    // shards flutuando ao redor
+    const shardPos: Array<[number, number, number]> = [
+      [-40, -16, 8],
+      [44, -2, 7],
+      [-28, -44, 6],
+    ];
+    for (const [dx, dy, s] of shardPos) {
+      const sh = this.add
+        .triangle(x + dx, y + dy, 0, -s, -s * 0.7, s * 0.6, s * 0.7, s * 0.6, s % 2 ? CY : VI)
+        .setOrigin(0, 0)
+        .setDepth(y + 1);
+      this.tweens.add({
+        targets: sh,
+        y: { from: y + dy - 4, to: y + dy + 4 },
+        angle: { from: -14, to: 14 },
+        duration: 2200 + s * 130,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.inOut",
+      });
+    }
+    // pulsação do brilho
+    this.tweens.add({
+      targets: [halo, core],
+      alpha: { from: 0.55, to: 1 },
+      scaleX: { from: 0.9, to: 1.1 },
+      scaleY: { from: 0.9, to: 1.1 },
+      duration: 1600,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.inOut",
+    });
+    // faíscas subindo
+    this.add
+      .particles(x, y - 10, "flameDot", {
+        x: { min: -16, max: 16 },
+        y: { min: -28, max: 10 },
+        speedY: { min: -34, max: -10 },
+        scale: { start: 0.28, end: 0 },
+        alpha: { start: 0.9, end: 0 },
+        lifespan: { min: 900, max: 1500 },
+        frequency: 150,
+        quantity: 1,
+        tint: [CY, VI, 0xeaffff],
+        blendMode: "ADD",
+      })
+      .setDepth(y + 3);
+    // colisão leve (monumento)
+    const hb = this.add.rectangle(x, y + 16, 44, 26).setVisible(false);
+    this.physics.add.existing(hb, true);
+    this.obstacles.push(hb);
   }
 
   private addPalm(c: number, r: number) {
@@ -2287,7 +2444,71 @@ export class OfficeScene extends Phaser.Scene {
     lt(COLS - 1, cy + 12);
     this.cryptLights.push({ x: 11 * T + T / 2, y: (ROWS - 3) * T + T / 2 });
     this.cryptLights.push({ x: 19 * T + T / 2, y: (ROWS - 3) * T + T / 2 });
+
+    // NE: a cripta "ascende" — gadgets eletrônicos modernos jogados pela cripta. Cada um
+    // vira fonte de luz (brilha no escuro). A escuridão geral também clareia (ver update/applyFloor).
+    if (getFlags().novaEra) {
+      const gads: Array<[number, number, string]> = [
+        [5, cy + 9, "laptop"],
+        [25, cy + 7, "server"],
+        [13, cy + 11, "holo"],
+        [19, cy + 6, "drone"],
+        [10, cy + 15, "phone"],
+        [27, cy + 11, "panel"],
+      ];
+      for (const [c, r, kind] of gads) {
+        this.addCryptGadget(c, r, kind);
+        this.cryptLights.push({ x: c * T + T / 2, y: r * T + T / 2 });
+      }
+    }
     this.darkRT = this.add.renderTexture(0, 0, W, H).setOrigin(0).setDepth(9500);
+  }
+
+  /** NE — gadget eletrônico moderno "jogado" na cripta (brilha ciano no escuro). */
+  private addCryptGadget(c: number, r: number, kind: string) {
+    const x = c * T + T / 2;
+    const y = r * T + T / 2;
+    const CY = 0x37e0ff;
+    const SCR = 0x0a3a4a;
+    this.add.ellipse(x, y, 60, 46, CY, 0.1).setBlendMode(Phaser.BlendModes.ADD).setDepth(y + 1);
+    if (kind === "laptop") {
+      this.add.rectangle(x, y + 7, 30, 4, 0x1b2733).setDepth(y);
+      this.add.rectangle(x, y - 4, 28, 18, 0x101720).setStrokeStyle(1, 0x2b3a4a).setDepth(y);
+      this.add.rectangle(x, y - 4, 23, 13, SCR).setDepth(y);
+      this.add.rectangle(x, y - 4, 23, 13, CY, 0.5).setDepth(y);
+    } else if (kind === "server") {
+      this.add.rectangle(x, y, 22, 34, 0x161c26).setStrokeStyle(1, 0x2b3a4a).setDepth(y);
+      const leds = [0x37ff9e, CY, 0xffd23b];
+      for (let i = 0; i < 3; i++) this.add.ellipse(x - 5, y - 10 + i * 9, 4, 4, leds[i]).setDepth(y + 1);
+      this.add.rectangle(x + 4, y - 10, 8, 2, 0x2a3a4a).setDepth(y);
+      this.add.rectangle(x + 4, y - 1, 8, 2, 0x2a3a4a).setDepth(y);
+    } else if (kind === "holo") {
+      this.add.ellipse(x, y + 8, 26, 7, CY, 0.4).setBlendMode(Phaser.BlendModes.ADD).setDepth(y);
+      this.add
+        .triangle(x, y, 0, -22, -16, 8, 16, 8, CY, 0.22)
+        .setOrigin(0, 0)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setDepth(y + 1);
+      this.add.ellipse(x, y - 8, 18, 6).setStrokeStyle(1, 0x7df0ff, 0.7).setDepth(y + 1);
+      this.add.ellipse(x, y - 16, 11, 4).setStrokeStyle(1, 0x7df0ff, 0.6).setDepth(y + 1);
+      this.add.rectangle(x, y + 9, 14, 4, 0x1b2733).setDepth(y);
+    } else if (kind === "drone") {
+      this.add.rectangle(x - 12, y - 6, 12, 2, 0x2a3a4a).setDepth(y);
+      this.add.rectangle(x + 12, y - 6, 12, 2, 0x2a3a4a).setDepth(y);
+      this.add.ellipse(x - 16, y - 6, 9, 3, CY, 0.3).setDepth(y);
+      this.add.ellipse(x + 16, y - 6, 9, 3, CY, 0.3).setDepth(y);
+      this.add.rectangle(x, y, 16, 8, 0x161c26).setStrokeStyle(1, 0x2b3a4a).setDepth(y);
+      this.add.ellipse(x, y + 1, 5, 5, CY, 0.85).setDepth(y + 1);
+    } else if (kind === "phone") {
+      this.add.rectangle(x, y, 12, 22, 0x101720).setStrokeStyle(1, 0x2b3a4a).setAngle(18).setDepth(y);
+      this.add.rectangle(x, y, 9, 17, SCR).setAngle(18).setDepth(y);
+      this.add.rectangle(x, y, 9, 17, CY, 0.45).setAngle(18).setDepth(y);
+    } else {
+      this.add.rectangle(x, y, 34, 22, 0x101720).setStrokeStyle(1, 0x2b3a4a).setDepth(y);
+      this.add.rectangle(x, y, 28, 16, SCR).setDepth(y);
+      this.add.rectangle(x - 6, y - 3, 14, 2, CY, 0.8).setDepth(y + 1);
+      this.add.rectangle(x - 3, y + 2, 18, 2, CY, 0.5).setDepth(y + 1);
+    }
   }
 
   /** Coloca um sprite DCSS (monstro/altar) num tile, com leve flutuacao opcional. */
@@ -2390,7 +2611,7 @@ export class OfficeScene extends Phaser.Scene {
     cam.removeBounds(); // sem travar nos limites: o player fica sempre centralizado
     if (f === 0) cam.setBackgroundColor("#2f7fae");
     else if (f === 1) cam.setBackgroundColor("#07060d");
-    else cam.setBackgroundColor("#050409");
+    else cam.setBackgroundColor(getFlags().novaEra ? "#0a1626" : "#050409"); // NE: cripta ascendida = azul-tech
   }
 
   /**
@@ -2774,7 +2995,9 @@ export class OfficeScene extends Phaser.Scene {
     if (this.currentFloor === 2 && this.darkRT) {
       const rt = this.darkRT;
       rt.clear();
-      rt.fill(0x020109, 0.96);
+      // NE: a cripta ascendeu — escuridão clareada (azul-tech, menos opaca) em vez de quase-preto
+      if (getFlags().novaEra) rt.fill(0x0a1626, 0.78);
+      else rt.fill(0x020109, 0.96);
       rt.erase("lightBig", this.player.x - 150, this.player.y - 150);
       for (const L of this.cryptLights) rt.erase("lightSmall", L.x - 95, L.y - 95);
       this.remotes.forEach((r, sid) => {

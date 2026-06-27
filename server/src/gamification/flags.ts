@@ -14,6 +14,7 @@ export type GamifFlags = {
   stats: boolean; // F7 — bonus de combate por nivel (so soma, nunca pune)
   cosmetics: boolean; // F8 — cosmeticos + celebracao
   social: boolean; // F9 — streak de time / cooperacao
+  novaEra: boolean; // NE — mudanca estetica da nova fase (Nucleo, cripta ascendida, cristal)
 };
 
 // Desliga com "0", "false", "off" ou "no" (qualquer caixa); qualquer outro valor —
@@ -40,5 +41,6 @@ export function getFlags(): GamifFlags {
     stats: f("GAMIF_STATS"),
     cosmetics: f("GAMIF_COSMETICS"),
     social: f("GAMIF_SOCIAL"),
+    novaEra: f("GAMIF_NOVA_ERA"),
   };
 }

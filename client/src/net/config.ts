@@ -13,6 +13,7 @@ export type GamifFlags = {
   stats: boolean; // F7 — bonus de combate por nivel (so soma, nunca pune)
   cosmetics: boolean; // F8 — cosmeticos + celebracao
   social: boolean; // F9 — streak de time / cooperacao
+  novaEra: boolean; // NE — mudanca estetica da nova fase (Nucleo, cripta ascendida, cristal)
 };
 
 // Default: tudo LIGADO (mesmo default do servidor). Se o /config falhar no boot, o jogo
@@ -27,6 +28,7 @@ const TODOS_ON: GamifFlags = {
   stats: true,
   cosmetics: true,
   social: true,
+  novaEra: true,
 };
 
 let flags: GamifFlags = { ...TODOS_ON };
