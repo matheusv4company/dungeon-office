@@ -1,5 +1,6 @@
 import { getStateCallbacks, type Room } from "../net/room";
 import { getFlags } from "../net/config";
+import { daysToDue } from "../util/overdue";
 
 /** Gestor de tarefas (kanban) — overlay HTML compartilhado, sincronizado via Colyseus. */
 
@@ -77,25 +78,6 @@ function daysOverdue(due: string, col: string): number {
   today.setHours(0, 0, 0, 0);
   const diff = Math.floor((today.getTime() - d.getTime()) / 86400000);
   return diff > 0 ? diff : 0;
-}
-/**
- * F4 — dias até o prazo: >0 faltam dias, 0 é hoje, <0 atrasada (|n| dias). null = sem prazo,
- * ou em "feito" (pronto) / "travado" (relógio PAUSADO). Usa committedDue (prazo congelado ao
- * iniciar, anti-empurrar-prazo); se ainda não congelou, cai no due de planejamento.
- */
-function daysToDue(committedDue: number, due: string, col: string): number | null {
-  if (col === "feito" || col === "travado") return null;
-  let deadline: number;
-  if (committedDue && committedDue > 0) deadline = committedDue;
-  else if (due) {
-    deadline = Date.parse(`${due}T23:59:59`);
-    if (Number.isNaN(deadline)) return null;
-  } else return null;
-  const dueDay = new Date(deadline);
-  dueDay.setHours(0, 0, 0, 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return Math.round((dueDay.getTime() - today.getTime()) / 86400000);
 }
 /** Monta o chip de prazo escalonado (ou null se não há nada a mostrar). Tom de SOCORRO, nunca culpa. */
 function overdueChip(t: TaskView): HTMLSpanElement | null {

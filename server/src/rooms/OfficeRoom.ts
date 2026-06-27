@@ -118,6 +118,14 @@ export class OfficeRoom extends Room<OfficeState> {
       if (p) p.handRaised = !!msg?.raised;
     });
 
+    // F5: "chamar reforço" — pedido cooperativo pro time inteiro (exceto quem chamou).
+    this.onMessage("help:call", (client) => {
+      if (!getFlags().climate) return;
+      const caller = this.state.players.get(client.sessionId);
+      if (!caller) return;
+      this.broadcast("help:called", { name: caller.name }, { except: client });
+    });
+
     // "Bola de fogo": efeito efemero — so retransmite pros outros renderizarem.
     this.onMessage("fireball", (client, msg: { x?: number; y?: number; dir?: number }) => {
       this.broadcast(

@@ -310,3 +310,42 @@ como era antes); `task:block` vira no-op.
   tom "pede, não exige" do design (não forçar). O card fica visível na coluna Travado. Aceitável.
 
 **Ficou de fora:** botão "chamar reforço" no card 🔴 (é o F5, que reusa a infra de chamar/notificar).
+
+---
+
+## F5 — Visão própria + Clima do escritório ✅ FEITO
+**Commit:** (ver `git log`) · **Flag:** `GAMIF_CLIMATE` (default ON). **Desligar:** `GAMIF_CLIMATE=0`.
+
+**O que entrou:**
+- `client/src/util/overdue.ts` (novo) — `daysToDue` extraído do kanban (reuso kanban + mundo).
+- `client/src/scenes/OfficeScene.ts`:
+  - **Nuvem privada** `localCloud` 🌧️: SÓ sobre o MEU avatar, SÓ eu vejo (não sincroniza, não aparece em remotos —
+    privada por construção). Visível quando EU tenho tarefa atrasada. Criada antes da uiCam → ignorada pelo HUD.
+  - **Clima do escritório** (badge DOM, agregado SEM nomes): "☀️ Escritório em dia" / "🌧️ N pedindo reforço" +
+    botão "🆘 chamar reforço". Timer de recálculo (3s) lê o board e separa total (clima) de meu (nuvem).
+  - `callBackup` → `help:call`; `onMessage("help:called")` → toast "🆘 <nome> pediu reforço!".
+  - Cleanup no SHUTDOWN + reset defensivo no create().
+- `server/src/rooms/OfficeRoom.ts` — `help:call` (gated por `getFlags().climate`) → broadcast `help:called` {name do
+  CHAMADOR} exceto ele. O nome que aparece é de quem PEDIU ajuda (ato voluntário, cooperação), nunca de quem atrasou.
+
+**Como desligar:** `GAMIF_CLIMATE=0` → sem nuvem, sem badge, sem broadcast (gate nas 2 pontas).
+
+**QA feito (tudo ✅):**
+- Badge mostra "🌧️ 1 entrega pedindo reforço" com a tarefa real atrasada do Pedro; nuvem 🌧️ sobre o avatar dele (screenshot).
+- **Agregado vs meu / privacidade:** criei tarefa atrasada da Ana → clima vira "2" (total), mas meu atraso/nuvem fica
+  "1" (só Pedro). Tarefa da Ana NÃO bota nuvem no Pedro. ✅
+- **Chamar reforço:** clique → toast "🆘 Reforço chamado pro time!"; servidor faz broadcast (handler do outro lado wired).
+- **OFF** (flag mutado pra false): badge não recria, nuvem invisível. ✅
+- Voz/update/kanban intactos (nuvem é world-object ignorado pela uiCam; timer independente do voiceBgTimer).
+- Review (general-purpose): privacidade central OK, gate nos 2 lados, sem leak (corrigido o reset defensivo no create()).
+
+**Riscos/decisões tomadas sozinho:**
+- **"Minha tarefa" por nome de exibição** (`assignee === loadSelection().name`), coerente com o modelo (o assignee no
+  kanban É o nome do membro, não o memberId). Edge de homônimo: 2 membros de mesmo nome → um veria a própria nuvem
+  acender por tarefa do outro — mas SÓ na tela dele (não vaza pra terceiros). Time de 5 com nomes distintos → não
+  acontece. RISCO ACEITO/documentado.
+- **Clima recalcula por timer (3s)** em vez de listener do board (o OfficeScene não tem listener próprio de tasks; o
+  kanban tem). 3s é barato (forEach em dezenas de cards). Decisão pragmática.
+- **Off-by-one entre fusos** (herdado do daysToDue): mesmo do F4, risco nulo pro time BR.
+
+**Ficou de fora:** sugerir "quem está online e perto" pra reforço (o broadcast vai pra todos; refinamento futuro).

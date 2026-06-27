@@ -6,6 +6,7 @@ import { VoiceManager } from "../net/voice";
 import { KanbanBoard } from "../ui/kanban";
 import { loadMember } from "../auth/login";
 import { getFlags } from "../net/config";
+import { daysToDue } from "../util/overdue";
 
 const T = 32;
 const COLS = 30;
@@ -110,6 +111,12 @@ export class OfficeScene extends Phaser.Scene {
   private handKey?: Phaser.Input.Keyboard.Key;
   private localHand?: Phaser.GameObjects.Text;
   private lastHandsSig = "";
+  // F5 — visão própria do atraso (nuvem privada) + clima do escritório (agregado, sem nomes)
+  private localCloud?: Phaser.GameObjects.Text; // nuvenzinha SÓ sobre o meu avatar (só eu vejo)
+  private myOverdue = 0; // qtas tarefas MINHAS estão atrasadas (recalc por timer)
+  private climateEl?: HTMLDivElement; // badge HUD do clima (DOM)
+  private climateLabel?: HTMLSpanElement;
+  private climateTimer?: ReturnType<typeof setInterval>;
   private prevHand = new Map<string, boolean>(); // sid -> mao levantada (p/ detectar a subida)
 
   // bola de fogo (espaco) — efeito efemero sincronizado
@@ -171,6 +178,14 @@ export class OfficeScene extends Phaser.Scene {
     this.obstacles = [];
     this.leaving = false;
     this.reconnecting = false;
+    // F5 — reset defensivo do clima/nuvem (consistente com os demais campos efêmeros)
+    if (this.climateTimer) clearInterval(this.climateTimer);
+    this.climateTimer = undefined;
+    this.climateEl?.remove();
+    this.climateEl = undefined;
+    this.climateLabel = undefined;
+    this.localCloud = undefined;
+    this.myOverdue = 0;
     this.voiceBtn = undefined;
     this.shareBtn = undefined;
     this.micBtn = undefined;
@@ -317,6 +332,15 @@ export class OfficeScene extends Phaser.Scene {
       .setVisible(false)
       .setDepth(UI_DEPTH);
 
+    // F5 — nuvenzinha PRIVADA do atraso: só sobre o MEU avatar e só eu vejo (não sincroniza,
+    // não aparece em remotos). Estado do trabalho, nunca rótulo na pessoa. Criada aqui (antes
+    // da uiCam) pra já entrar no snapshot que a câmera de HUD ignora.
+    this.localCloud = this.add
+      .text(spawnX, spawnY - 56, "🌧️", { fontFamily: "monospace", fontSize: "16px" })
+      .setOrigin(0.5)
+      .setVisible(false)
+      .setDepth(UI_DEPTH);
+
     this.myHpBg = this.add
       .rectangle(spawnX, spawnY - 44, 32, 6, 0x000000, 0.6)
       .setOrigin(0.5)
@@ -364,7 +388,8 @@ export class OfficeScene extends Phaser.Scene {
     this.setupUiCameraAndZoom([instr]);
     this.setupTouchControls(); // joystick + botão de fogo (só no toque)
 
-    // ---- multiplayer ----
+    // ---- clima do escritório (F5) + multiplayer ----
+    this.setupClimate();
     void this.connectMultiplayer(sel.name || "Convidado", spawnX, spawnY);
   }
 
@@ -382,6 +407,10 @@ export class OfficeScene extends Phaser.Scene {
       this.deathOverlay = undefined;
       if (this.voiceBgTimer) clearInterval(this.voiceBgTimer);
       this.voiceBgTimer = undefined;
+      if (this.climateTimer) clearInterval(this.climateTimer);
+      this.climateTimer = undefined;
+      this.climateEl?.remove();
+      this.climateEl = undefined;
       this.kanban?.destroy();
       this.kanban = undefined;
       if (this.onResizeRef) {
@@ -491,6 +520,12 @@ export class OfficeScene extends Phaser.Scene {
         this.showAiFeedback(String(m?.status ?? ""), Number(m?.score ?? -1), String(m?.note ?? ""));
       },
     );
+    // F5: alguém pediu reforço pro time (cooperação) — toast pra todos os outros.
+    room.onMessage("help:called", (m: { name?: string }) => {
+      if (this.room !== room) return;
+      this.playBeep();
+      this.showToast(`🆘 ${String(m?.name ?? "Alguém")} pediu reforço!`, "#b9892a", 3000);
+    });
     this.refreshRoster();
     this.showReconnecting(false);
   }
@@ -746,6 +781,63 @@ export class OfficeScene extends Phaser.Scene {
       this.meetingBadge = undefined;
     }
     if (this.meetingBadge) this.meetingBadge.setPosition(this.scale.width / 2, 12);
+  }
+
+  // ---------- F5: clima do escritório (agregado, sem nomes) + chamar reforço ----------
+
+  /** Cria o badge "Clima do Escritório" (DOM) + timer de recálculo. Só com o flag on. */
+  private setupClimate() {
+    if (!getFlags().climate || this.climateEl) return; // desligado -> sem badge nem nuvem
+    const el = document.createElement("div");
+    el.style.cssText =
+      "position:fixed;top:40px;left:50%;transform:translateX(-50%);z-index:9998;display:flex;" +
+      "align-items:center;gap:8px;background:#15131dcc;border:1px solid #3a3550;border-radius:999px;" +
+      "padding:5px 12px;font:12px system-ui,Segoe UI;color:#e8e0c8;box-shadow:0 4px 16px #0007;";
+    const label = document.createElement("span");
+    label.textContent = "☀️ Escritório em dia";
+    const btn = document.createElement("button");
+    btn.textContent = "🆘 chamar reforço";
+    btn.style.cssText =
+      "font:11px system-ui;cursor:pointer;border:none;border-radius:999px;background:#b9892a;" +
+      "color:#15131d;padding:4px 10px;font-weight:700;";
+    btn.onclick = () => this.callBackup();
+    el.append(label, btn);
+    document.body.appendChild(el);
+    this.climateEl = el;
+    this.climateLabel = label;
+    this.recomputeClimate();
+    this.climateTimer = setInterval(() => this.recomputeClimate(), 3000);
+  }
+
+  /** Recalcula o atraso AGREGADO (sem nomes, pro clima) e o MEU atraso (pra nuvem privada). */
+  private recomputeClimate() {
+    const tasks = (this.room?.state as unknown as { tasks?: { forEach(cb: (t: any) => void): void } })
+      ?.tasks;
+    const myName = loadSelection().name;
+    let total = 0;
+    let mine = 0;
+    tasks?.forEach((t: any) => {
+      if (t.archived) return;
+      const d = daysToDue(Number(t.committedDue) || 0, String(t.due || ""), String(t.col));
+      if (d !== null && d < 0) {
+        total++;
+        if (myName && t.assignee === myName) mine++;
+      }
+    });
+    this.myOverdue = mine; // alimenta a nuvem privada (update())
+    if (this.climateLabel) {
+      this.climateLabel.textContent =
+        total === 0
+          ? "☀️ Escritório em dia"
+          : `🌧️ ${total} ${total === 1 ? "entrega" : "entregas"} pedindo reforço`;
+    }
+  }
+
+  /** Chama reforço pro time inteiro (cooperação, não culpa) — broadcast via servidor. */
+  private callBackup() {
+    if (!this.room) return;
+    this.room.send("help:call", {});
+    this.showToast("🆘 Reforço chamado pro time!", "#b9892a", 1800);
   }
 
   private refreshRoster() {
@@ -2311,6 +2403,11 @@ export class OfficeScene extends Phaser.Scene {
     }
     this.player.setDepth(this.player.y);
     this.nameLabel.setPosition(this.player.x, this.player.y - 30);
+    // F5 — nuvem privada do atraso segue o avatar (visível só pra mim, só com o flag on)
+    if (this.localCloud) {
+      this.localCloud.setPosition(this.player.x + 22, this.player.y - 52).setDepth(this.player.y + 1);
+      this.localCloud.setVisible(getFlags().climate && this.myOverdue > 0);
+    }
 
     // troca de andar (deduzida pelo Y) + gatilho das escadas
     const fNow = floorOfY(this.player.y);
