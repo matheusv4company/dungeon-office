@@ -267,3 +267,46 @@ Review de alto esforço (8 ângulos × verificação, ~48 agentes) sobre o delta
 - **Rate-limit fraco:** resetava `fails:0` → 5 tentativas novas a cada 30s (PIN 4-díg cairia em ~16h). **Fix:**
   backoff PROGRESSIVO (cooldown dobra a cada bloqueio: 30s→1m→2m→…→1h, `lockouts` não zera) + prune do Map quando
   cresce. **QA:** 5 erros → 429 (regressão do gate OK). Brute-force vira inviável.
+
+---
+
+## F4 — Atraso amigável ✅ FEITO
+**Commit:** (ver `git log`) · **Flag:** `GAMIF_OVERDUE` (default ON). **Desligar:** `GAMIF_OVERDUE=0`.
+
+**O que entrou:**
+- `Task.blockReason` (motivo curto do "Travado") + espelho em store/loader/persist.
+- `OfficeRoom`: `markColumn` limpa `blockReason` ao SAIR de "travado"; handler `task:block` (gated por
+  `getFlags().overdue`, só se `col==="travado"`, clamp 120).
+- `client/src/ui/kanban.ts`:
+  - `daysToDue(committedDue, due, col)` — usa o prazo CONGELADO (committedDue, anti-empurrar-prazo); null em
+    "feito"/"travado" (relógio pausado).
+  - `overdueChip` escalonado com **tom de socorro**: 🟡 "⏳ vence em Xd" (1-2d) · 🟠 "📅 vence hoje" · 🔴 "🆘 Xd
+    atrasada" (1-5d, tip "precisa de ajuda?") · 🔴 "🆘 Xd — resgate" (6+d, "missão de resgate: quem ajuda?").
+    Mais de 2 dias no futuro → sem chip.
+  - Gate por `getFlags().overdue`; flag OFF → chip antigo "Xd atraso". Chip 🚧 do motivo em cards travados.
+  - `maybePromptBlock` (window.prompt → `task:block`) ao ENTRAR em travado (no drag e no editor).
+  - Filtro "só atrasados" alinhado ao chip (`daysToDue<0`) com flag on.
+
+**Como desligar:** `GAMIF_OVERDUE=0` → volta ao chip vermelho "Xd atraso" (inclusive contando travado como atrasado,
+como era antes); `task:block` vira no-op.
+
+**QA feito (tudo ✅):**
+- Chips escalonados conferem por prazo: +1d→🟡"vence em 1d", hoje→🟠"vence hoje", -3d→🔴"🆘 3d atrasada",
+  -7d→🔴"🆘 7d resgate", +10d→sem chip. Tons de socorro nos tooltips. (screenshot)
+- **Travado pausa:** mover card pra travado → some o chip de atraso. `task:block` → chip "🚧 motivo".
+- `maybePromptBlock` (prompt sobrescrito no QA) → `task:block` na ordem certa (move→block) → blockReason setado.
+- **Destravar** (sair de travado) → `blockReason` limpa.
+- **OFF** (mutei `window.__gam.flags().overdue=false` + re-render): card volta ao chip antigo "3d atraso", sem
+  chip escalonado. ✅
+- Voz/CRUD/drag intactos (F4 é só kanban; review confirmou que não toca voz).
+- Review (general-purpose): sem bug crítico; XSS ok (textContent), gate nos 2 lados, ordem de msg ok.
+
+**Riscos/decisões tomadas sozinho:**
+- **Off-by-one entre fusos (committedDue em ms):** o committedDue é parseado no fuso do SERVIDOR e o dia é
+  derivado no fuso do CLIENTE. Pro time BR (single-TZ, servidor BR/UTC, prazo às 23:59:59) NÃO dá off-by-one
+  (23:59 UTC ainda é o mesmo dia em BRT). Risco só existiria com cliente em fuso muito distante do servidor —
+  não é o caso. Não re-arquitetei o committedDue (é number ms por design da Etapa 0a). RISCO ACEITO/documentado.
+- **Cancelar o prompt de motivo** deixa o card travado SEM motivo (relógio pausado mesmo assim). Coerente com o
+  tom "pede, não exige" do design (não forçar). O card fica visível na coluna Travado. Aceitável.
+
+**Ficou de fora:** botão "chamar reforço" no card 🔴 (é o F5, que reusa a infra de chamar/notificar).

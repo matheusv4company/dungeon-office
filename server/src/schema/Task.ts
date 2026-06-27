@@ -29,4 +29,6 @@ export class Task extends Schema {
   // --- gamificacao F3: nota da IA (so PUBLICA quando aprovou; nota baixa fica privada) ---
   @type("number") aiScore = -1; // -1 = nao avaliada; 0-10 = nota (so preenchida se a IA aprovou)
   @type("string") aiNote = ""; // justificativa PUBLICA (so para entrega aprovada pela IA)
+  // --- gamificacao F4: atraso amigavel ---
+  @type("string") blockReason = ""; // motivo curto do "Travado" (pausa o relogio de atraso)
 }

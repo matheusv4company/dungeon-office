@@ -33,6 +33,9 @@ type TaskView = {
   // F3 — nota da IA (pública só quando aprovada)
   aiScore: number;
   aiNote: string;
+  // F4 — atraso amigável
+  committedDue: number; // prazo congelado (ms); 0 = ainda não congelado, cai no due
+  blockReason: string; // motivo do "Travado" (pausa o relógio)
 };
 
 // empresas (categoria IA / Marketing) — rotulo + cor do selo no card
@@ -74,6 +77,58 @@ function daysOverdue(due: string, col: string): number {
   today.setHours(0, 0, 0, 0);
   const diff = Math.floor((today.getTime() - d.getTime()) / 86400000);
   return diff > 0 ? diff : 0;
+}
+/**
+ * F4 — dias até o prazo: >0 faltam dias, 0 é hoje, <0 atrasada (|n| dias). null = sem prazo,
+ * ou em "feito" (pronto) / "travado" (relógio PAUSADO). Usa committedDue (prazo congelado ao
+ * iniciar, anti-empurrar-prazo); se ainda não congelou, cai no due de planejamento.
+ */
+function daysToDue(committedDue: number, due: string, col: string): number | null {
+  if (col === "feito" || col === "travado") return null;
+  let deadline: number;
+  if (committedDue && committedDue > 0) deadline = committedDue;
+  else if (due) {
+    deadline = Date.parse(`${due}T23:59:59`);
+    if (Number.isNaN(deadline)) return null;
+  } else return null;
+  const dueDay = new Date(deadline);
+  dueDay.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((dueDay.getTime() - today.getTime()) / 86400000);
+}
+/** Monta o chip de prazo escalonado (ou null se não há nada a mostrar). Tom de SOCORRO, nunca culpa. */
+function overdueChip(t: TaskView): HTMLSpanElement | null {
+  const d = daysToDue(t.committedDue, t.due, t.col);
+  if (d === null) return null; // feito/travado/sem prazo
+  let cls: string, text: string, tip: string;
+  if (d < 0) {
+    const late = -d;
+    if (late >= 6) {
+      cls = "od-rescue";
+      text = `🆘 ${late}d — resgate`;
+      tip = "missão de resgate: quem pode ajudar a fechar?";
+    } else {
+      cls = "od-late";
+      text = `🆘 ${late}d atrasada`;
+      tip = "precisa de ajuda pra destravar?";
+    }
+  } else if (d === 0) {
+    cls = "od-today";
+    text = "📅 vence hoje";
+    tip = "dá pra fechar hoje? 💪";
+  } else if (d <= 2) {
+    cls = "od-soon";
+    text = `⏳ vence em ${d}d`;
+    tip = "chegando — de olho 🙂";
+  } else {
+    return null; // mais de 2 dias: sem chip (não polui)
+  }
+  const sp = document.createElement("span");
+  sp.className = `kb-chip ${cls}`;
+  sp.textContent = text;
+  sp.title = tip;
+  return sp;
 }
 function fmtDate(due: string): string {
   if (!due) return "";
@@ -131,6 +186,12 @@ function injectStyles() {
 .kb-card .meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:#6b7280;}
 .kb-chip{font-size:11px;font-weight:600;border-radius:5px;padding:2px 7px;}
 .kb-late{background:#fee2e2;color:#b91c1c;font-weight:700;border-radius:5px;padding:2px 6px;font-size:11px;}
+/* F4 — chips de prazo com tom de socorro (escalonados) */
+.kb-chip.od-soon{background:#fef9c3;color:#854d0e;}
+.kb-chip.od-today{background:#ffedd5;color:#9a3412;}
+.kb-chip.od-late{background:#fee2e2;color:#b91c1c;font-weight:700;}
+.kb-chip.od-rescue{background:#b91c1c;color:#fff;font-weight:700;}
+.kb-chip.od-block{background:#e5e7eb;color:#374151;}
 /* F2 — gate de entrega no card de "Feito" */
 .kb-gate{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;padding-top:8px;
   border-top:1px dashed #e5e7eb;}
@@ -395,6 +456,7 @@ export class KanbanBoard {
         delivered: !!t.delivered, deliveredBy: t.deliveredBy ?? "", proof: t.proof ?? "",
         deliverNote: t.deliverNote ?? "", verified: !!t.verified,
         aiScore: typeof t.aiScore === "number" ? t.aiScore : -1, aiNote: t.aiNote ?? "",
+        committedDue: typeof t.committedDue === "number" ? t.committedDue : 0, blockReason: t.blockReason ?? "",
       }),
     );
     return out;
@@ -452,7 +514,14 @@ export class KanbanBoard {
       if (this.filter.unit && t.unit !== this.filter.unit) return false;
       if (this.filter.client && t.client !== this.filter.client) return false;
       if (this.filter.assignee && t.assignee !== this.filter.assignee) return false;
-      if (this.filter.lateOnly && daysOverdue(t.due, t.col) <= 0) return false;
+      if (this.filter.lateOnly) {
+        // com F4 on, "só atrasados" usa o mesmo critério dos chips (e pausa em travado);
+        // sem F4, mantém o cálculo antigo.
+        const isLate = getFlags().overdue
+          ? (daysToDue(t.committedDue, t.due, t.col) ?? 0) < 0
+          : daysOverdue(t.due, t.col) > 0;
+        if (!isLate) return false;
+      }
       if (this.filter.text) {
         const hay = `${t.title} ${t.desc} ${t.client} ${t.assignee}`.toLowerCase();
         if (!hay.includes(this.filter.text)) return false;
@@ -541,12 +610,26 @@ export class KanbanBoard {
       dt.textContent = fmtDate(t.due);
       meta.appendChild(dt);
     }
-    const late = daysOverdue(t.due, t.col);
-    if (late > 0) {
-      const lt = document.createElement("span");
-      lt.className = "kb-late";
-      lt.textContent = `${late}d atraso`;
-      meta.appendChild(lt);
+    if (getFlags().overdue) {
+      // F4: chip escalonado com TOM DE SOCORRO (usa committedDue; pausa em travado/feito)
+      const chip = overdueChip(t);
+      if (chip) meta.appendChild(chip);
+      // motivo do "Travado" (relógio pausado) — neutro, sobre o trabalho
+      if (t.col === "travado" && t.blockReason) {
+        const bk = document.createElement("span");
+        bk.className = "kb-chip od-block";
+        bk.textContent = `🚧 ${t.blockReason}`;
+        meta.appendChild(bk);
+      }
+    } else {
+      // comportamento antigo (flag off): "Xd atraso" vermelho
+      const late = daysOverdue(t.due, t.col);
+      if (late > 0) {
+        const lt = document.createElement("span");
+        lt.className = "kb-late";
+        lt.textContent = `${late}d atraso`;
+        meta.appendChild(lt);
+      }
     }
     if (t.client) {
       const ch = document.createElement("span");
@@ -739,7 +822,20 @@ export class KanbanBoard {
       const prev = idx > 0 ? orderOf(siblings[idx - 1]) : orderOf(before) - 1;
       order = (prev + orderOf(before)) / 2;
     }
+    const oldCol = this.allTasks().find((t) => t.id === id)?.col ?? "";
     this.room.send("task:move", { id, col, order });
+    this.maybePromptBlock(id, col, oldCol);
+  }
+
+  /** F4 — ao ENTRAR em "Travado", pede um motivo curto (pausa o relógio de atraso). */
+  private maybePromptBlock(id: string, newCol: string, oldCol: string) {
+    if (!getFlags().overdue) return;
+    if (newCol !== "travado" || oldCol === "travado") return;
+    const reason = window.prompt(
+      "Travado — por quê? (motivo curto; ex.: aguardando cliente)\nIsso pausa o relógio de atraso.",
+      "",
+    );
+    if (reason && reason.trim()) this.room.send("task:block", { id, reason: reason.trim() });
   }
 
   // ---------- modal criar/editar ----------
@@ -868,8 +964,12 @@ export class KanbanBoard {
         due: due.value,
         col: colSel.value,
       };
-      if (editing && task) this.room.send("task:update", { id: task.id, ...payload });
-      else this.room.send("task:create", payload);
+      if (editing && task) {
+        this.room.send("task:update", { id: task.id, ...payload });
+        this.maybePromptBlock(task.id, payload.col, task.col); // F4: motivo se foi pra Travado
+      } else {
+        this.room.send("task:create", payload);
+      }
       this.closeModal();
     };
     actions.append(cancel, save);

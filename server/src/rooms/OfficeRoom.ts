@@ -67,6 +67,7 @@ export class OfficeRoom extends Room<OfficeState> {
       t.verifiedAt = Number(d.verifiedAt) || 0;
       t.aiScore = typeof d.aiScore === "number" ? d.aiScore : -1;
       t.aiNote = String(d.aiNote ?? "");
+      t.blockReason = String(d.blockReason ?? "");
       this.state.tasks.set(t.id, t);
     }
     for (const c of board.clients) {
@@ -293,6 +294,15 @@ export class OfficeRoom extends Room<OfficeState> {
       this.persistBoard();
     });
 
+    // F4: motivo curto do "Travado" — pausa o relogio de atraso (o chip some). So vale em travado.
+    this.onMessage("task:block", (_c, msg: { id?: string; reason?: string }) => {
+      if (!getFlags().overdue) return;
+      const t = this.state.tasks.get(String(msg?.id ?? ""));
+      if (!t || t.col !== "travado") return;
+      t.blockReason = String(msg?.reason ?? "").trim().slice(0, 120);
+      this.persistBoard();
+    });
+
     // arquiva todos os cards em "Feito" (somem do board, mas ficam no historico)
     this.onMessage("board:archiveDone", () => {
       const gateOn = getFlags().gate;
@@ -392,6 +402,7 @@ export class OfficeRoom extends Room<OfficeState> {
     // Sair de "feito" pra trás = retrabalho: o ciclo recomeça, então zera o estado de entrega.
     // Senão o card volta com o selo "Verificado" e a prova antiga sem reentrega (escrow furado).
     if (t.col === "feito" && newCol !== "feito") this.resetDelivery(t);
+    if (t.col === "travado" && newCol !== "travado") t.blockReason = ""; // destravou: limpa o motivo
     if (newCol === "fazendo") this.freezeCommittedDue(t);
     if (newCol === "feito" && t.completedAt === 0) t.completedAt = Date.now();
   }
@@ -500,6 +511,7 @@ export class OfficeRoom extends Room<OfficeState> {
         verifiedAt: t.verifiedAt,
         aiScore: t.aiScore,
         aiNote: t.aiNote,
+        blockReason: t.blockReason,
       });
     });
     const clients: ClientColor[] = [];
