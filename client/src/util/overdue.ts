@@ -2,11 +2,15 @@
 // pra manter a regra de atraso num lugar só. Usa committedDue (prazo CONGELADO ao iniciar,
 // anti-empurrar-prazo); se ainda não congelou, cai no due de planejamento.
 
-/** Dias até o prazo: >0 faltam, 0 é hoje, <0 atrasada. null = sem prazo / "feito" / "travado" (pausado). */
-export function daysToDue(committedDue: number, due: string, col: string): number | null {
+/**
+ * Dias até o prazo: >0 faltam, 0 é hoje, <0 atrasada. null = sem prazo / "feito" / "travado" (pausado).
+ * `blockedMs` (tempo já parado em "Travado") ESTENDE o prazo congelado — pausa real do relógio,
+ * pra um bloqueio externo (aguardando cliente) não virar atraso ao destravar.
+ */
+export function daysToDue(committedDue: number, due: string, col: string, blockedMs = 0): number | null {
   if (col === "feito" || col === "travado") return null;
   let deadline: number;
-  if (committedDue && committedDue > 0) deadline = committedDue;
+  if (committedDue && committedDue > 0) deadline = committedDue + (blockedMs || 0);
   else if (due) {
     deadline = Date.parse(`${due}T23:59:59`);
     if (Number.isNaN(deadline)) return null;

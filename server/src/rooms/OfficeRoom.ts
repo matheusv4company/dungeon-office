@@ -9,6 +9,7 @@ import {
   awardPE,
   clawbackPE,
   getProgressView,
+  currentWeekKey,
   normId,
   type ProgressView,
 } from "../progress/store";
@@ -79,7 +80,11 @@ export class OfficeRoom extends Room<OfficeState> {
       t.aiScore = typeof d.aiScore === "number" ? d.aiScore : -1;
       t.aiNote = String(d.aiNote ?? "");
       t.blockReason = String(d.blockReason ?? "");
+      t.blockedMs = Number(d.blockedMs) || 0;
+      t.blockedAt = Number(d.blockedAt) || 0;
       t.scoreAwarded = Number(d.scoreAwarded) || 0;
+      t.awardedTo = String(d.awardedTo ?? "");
+      t.awardedWeek = String(d.awardedWeek ?? "");
       t.size = SIZES.has(String(d.size)) ? String(d.size) : "";
       t.clientWeight = WEIGHTS.has(Number(d.clientWeight)) ? Number(d.clientWeight) : 100;
       this.state.tasks.set(t.id, t);
@@ -433,19 +438,28 @@ export class OfficeRoom extends Room<OfficeState> {
     // Sair de "feito" pra trás = retrabalho: o ciclo recomeça, então zera o estado de entrega.
     // Senão o card volta com o selo "Verificado" e a prova antiga sem reentrega (escrow furado).
     if (t.col === "feito" && newCol !== "feito") this.resetDelivery(t);
-    if (t.col === "travado" && newCol !== "travado") t.blockReason = ""; // destravou: limpa o motivo
+    // F4 — pausa REAL do relógio: acumula o tempo parado em "Travado" pra ESTENDER o prazo.
+    if (newCol === "travado") {
+      t.blockedAt = Date.now(); // começou a pausar
+    } else if (t.col === "travado") {
+      if (t.blockedAt > 0) t.blockedMs += Date.now() - t.blockedAt; // destravou: soma o tempo parado
+      t.blockedAt = 0;
+      t.blockReason = ""; // destravou: limpa o motivo
+    }
     if (newCol === "fazendo") this.freezeCommittedDue(t);
     if (newCol === "feito" && t.completedAt === 0) t.completedAt = Date.now();
   }
 
   /** Zera todo o estado de entrega/escrow de um card (retrabalho ou "Devolver"). */
   private resetDelivery(t: Task) {
-    // F6: se já creditou PE, estorna (escrow revogado) ANTES de limpar o scoreAwarded.
-    if (getFlags().progression && t.scoreAwarded > 0) {
-      const who = normId(t.assignee);
-      if (who) this.sendProgressTo(who, clawbackPE(who, t.scoreAwarded));
+    // F6: se já creditou PE, estorna (escrow revogado) ANTES de limpar. Usa awardedTo/awardedWeek
+    // (quem REALMENTE recebeu e em qual semana) — não o assignee atual, que pode ter sido reassignado.
+    if (getFlags().progression && t.scoreAwarded > 0 && t.awardedTo) {
+      this.sendProgressTo(t.awardedTo, clawbackPE(t.awardedTo, t.scoreAwarded, t.awardedWeek));
     }
     t.scoreAwarded = 0;
+    t.awardedTo = "";
+    t.awardedWeek = "";
     t.delivered = false;
     t.verified = false;
     t.proof = "";
@@ -462,8 +476,10 @@ export class OfficeRoom extends Room<OfficeState> {
   private computePE(t: Task): number {
     const base = SIZE_PE[t.size] ?? SIZE_PE.M; // default M se o tamanho não foi setado
     const peso = (t.clientWeight || 100) / 100; // 70→0.7, 100→1.0, 150→1.5
-    // FatorPrazo: deliveredAt (servidor) vs committedDue (congelado). Atrasou -> ×0.6 (ainda paga).
-    const atrasou = t.committedDue > 0 && t.deliveredAt > 0 && t.deliveredAt > t.committedDue;
+    // FatorPrazo: deliveredAt (servidor) vs prazo congelado ESTENDIDO pelo tempo em "Travado"
+    // (bloqueio externo não conta como atraso — culpa não é da pessoa). Atrasou -> ×0.6 (ainda paga).
+    const prazo = t.committedDue > 0 ? t.committedDue + t.blockedMs : 0;
+    const atrasou = prazo > 0 && t.deliveredAt > 0 && t.deliveredAt > prazo;
     return Math.round(base * peso * (atrasou ? 0.6 : 1.0) * 10) / 10;
   }
 
@@ -476,6 +492,8 @@ export class OfficeRoom extends Room<OfficeState> {
     const pe = this.computePE(t);
     if (pe <= 0) return;
     t.scoreAwarded = pe; // marca ANTES de persistir (anti-crédito-duplo)
+    t.awardedTo = who; // quem recebeu (pra estornar a pessoa certa mesmo se reassignar)
+    t.awardedWeek = currentWeekKey(); // semana do crédito (pra estornar na semana certa)
     this.sendProgressTo(who, awardPE(who, t.assignee, pe));
   }
 
@@ -583,7 +601,11 @@ export class OfficeRoom extends Room<OfficeState> {
         aiScore: t.aiScore,
         aiNote: t.aiNote,
         blockReason: t.blockReason,
+        blockedMs: t.blockedMs,
+        blockedAt: t.blockedAt,
         scoreAwarded: t.scoreAwarded,
+        awardedTo: t.awardedTo,
+        awardedWeek: t.awardedWeek,
         size: t.size,
         clientWeight: t.clientWeight,
       });

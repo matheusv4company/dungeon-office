@@ -270,13 +270,22 @@ export function awardPE(memberId: string, displayName: string, pe: number): Prog
   return buildView(m);
 }
 
-/** Estorna PE (devolução = escrow revogado). Nível segue o XP (estágio de escrow, pré-aceite). */
-export function clawbackPE(memberId: string, pe: number): ProgressView | undefined {
+/** Semana atual (pra carimbar no Task a semana do crédito e estornar nela depois). */
+export function currentWeekKey(): string {
+  return weekKey(Date.now());
+}
+
+/**
+ * Estorna PE (devolução = escrow revogado). Nível segue o XP (estágio de escrow, pré-aceite).
+ * `week` = a semana em que o PE foi CREDITADO (carimbada no Task) — estorna NELA, não na atual,
+ * pra não inflar a semana antiga nem zerar a corrente quando o estorno cruza a virada de semana.
+ */
+export function clawbackPE(memberId: string, pe: number, week?: string): ProgressView | undefined {
   const m = load().members[memberId];
   if (!m) return undefined;
   m.xp = Math.max(0, r1(m.xp - pe));
   m.level = levelFromXp(m.xp);
-  const wk = weekKey(Date.now());
+  const wk = week || weekKey(Date.now());
   if (m.weeks[wk]) m.weeks[wk] = Math.max(0, r1(m.weeks[wk] - pe));
   m.delivered = Math.max(0, m.delivered - 1);
   scheduleSave();

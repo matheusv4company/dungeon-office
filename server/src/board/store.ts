@@ -30,7 +30,11 @@ export type TaskData = {
   aiScore?: number;
   aiNote?: string;
   blockReason?: string;
+  blockedMs?: number;
+  blockedAt?: number;
   scoreAwarded?: number;
+  awardedTo?: string;
+  awardedWeek?: string;
   size?: string;
   clientWeight?: number;
 };

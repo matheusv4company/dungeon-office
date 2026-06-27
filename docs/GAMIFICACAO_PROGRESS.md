@@ -400,3 +400,28 @@ como era antes); `task:block` vira no-op.
 
 **Ficou de fora:** aceite-automático após N dias úteis; streak/buffs voláteis (parte no F7/F9); UI de "size travado
 ao entrar em fazendo" (anti-sandbagging — o campo existe, a trava é refinamento).
+
+---
+
+## ✅ REVIEW COMPLETO APÓS F6 (F4+F5+F6) — tratado
+Review de alto esforço (8 ângulos × verificação, ~55 agentes). 10 achados, 4 temas (vários eram o mesmo root),
+todos CONFIRMED e **corrigidos**. **Commit:** (ver `git log` — "fix(gamificacao): corrige reassign/semana/clima/travado").
+
+- **A — reassign/rename desviava crédito e clawback:** o PE era creditado ao assignee no verify, mas o clawback usava
+  o assignee ATUAL → se reatribuísse/renomeasse no meio, estornava a pessoa errada e o XP do creditado ficava órfão.
+  **Fix:** `Task.awardedTo` (carimba QUEM recebeu) + `awardedWeek`; `creditIfVerified` grava, `resetDelivery` estorna
+  POR `awardedTo`/`awardedWeek` (não pelo assignee atual). **QA end-to-end:** creditou Ana → reassign p/ Pedro →
+  devolveu → estornou a **Ana** (volta a 0), **Pedro intocado** (não foi debitado). ✅
+- **B — clawback estornava na semana ERRADA:** `clawbackPE` usava `weekKey(now)`, não a semana do crédito → inflava
+  a semana antiga e corrompia o baseline. **Fix:** `clawbackPE(memberId, pe, week)` estorna na semana carimbada
+  (`awardedWeek`). **QA (node):** clawback na semana do crédito zera certo; semana errada não toca a do crédito. ✅
+- **C — `recomputeClimate` comparava nome case-sensitive** (F5) enquanto o resto usa `normId` → a nuvem privada
+  sumia por diferença de caixa. **Fix:** comparação normalizada (`trim().toLowerCase()` nos dois lados) + passa
+  `blockedMs` ao `daysToDue`. ✅
+- **D — "Travado" não pausava o relógio DE VERDADE** (F4): só escondia o chip; ao destravar, o atraso inteiro
+  (incluindo dias bloqueados) reaparecia, punindo bloqueio legítimo. **Fix:** `Task.blockedMs`/`blockedAt`
+  acumulam o tempo em Travado em `markColumn`; `daysToDue` e `computePE` ESTENDEM o `committedDue` por `blockedMs`
+  (bloqueio externo não vira atraso). **QA:** blockedMs acumula o tempo real parado; deadline estende. ✅
+  (Isso também habilita o FatorPrazo ×1.0 do design pra atraso por dependência externa.)
+
+Todos verificados (server-side determinístico + end-to-end no browser) e re-typecheck verde.

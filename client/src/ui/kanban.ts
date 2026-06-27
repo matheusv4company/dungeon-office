@@ -37,6 +37,7 @@ type TaskView = {
   // F4 — atraso amigável
   committedDue: number; // prazo congelado (ms); 0 = ainda não congelado, cai no due
   blockReason: string; // motivo do "Travado" (pausa o relógio)
+  blockedMs: number; // tempo acumulado em "Travado" (estende o prazo)
   // F6 — progressão (peso pra PE)
   size: string; // "" | PP | P | M | G | GG
   clientWeight: number; // 70 | 100 | 150
@@ -98,7 +99,7 @@ function daysOverdue(due: string, col: string): number {
 }
 /** Monta o chip de prazo escalonado (ou null se não há nada a mostrar). Tom de SOCORRO, nunca culpa. */
 function overdueChip(t: TaskView): HTMLSpanElement | null {
-  const d = daysToDue(t.committedDue, t.due, t.col);
+  const d = daysToDue(t.committedDue, t.due, t.col, t.blockedMs);
   if (d === null) return null; // feito/travado/sem prazo
   let cls: string, text: string, tip: string;
   if (d < 0) {
@@ -456,6 +457,7 @@ export class KanbanBoard {
         deliverNote: t.deliverNote ?? "", verified: !!t.verified,
         aiScore: typeof t.aiScore === "number" ? t.aiScore : -1, aiNote: t.aiNote ?? "",
         committedDue: typeof t.committedDue === "number" ? t.committedDue : 0, blockReason: t.blockReason ?? "",
+        blockedMs: typeof t.blockedMs === "number" ? t.blockedMs : 0,
         size: t.size ?? "", clientWeight: typeof t.clientWeight === "number" ? t.clientWeight : 100,
       }),
     );
@@ -518,7 +520,7 @@ export class KanbanBoard {
         // com F4 on, "só atrasados" usa o mesmo critério dos chips (e pausa em travado);
         // sem F4, mantém o cálculo antigo.
         const isLate = getFlags().overdue
-          ? (daysToDue(t.committedDue, t.due, t.col) ?? 0) < 0
+          ? (daysToDue(t.committedDue, t.due, t.col, t.blockedMs) ?? 0) < 0
           : daysOverdue(t.due, t.col) > 0;
         if (!isLate) return false;
       }

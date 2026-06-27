@@ -844,15 +844,21 @@ export class OfficeScene extends Phaser.Scene {
   private recomputeClimate() {
     const tasks = (this.room?.state as unknown as { tasks?: { forEach(cb: (t: any) => void): void } })
       ?.tasks;
-    const myName = loadSelection().name;
+    // normaliza igual ao servidor (trim+lowercase) — senão a nuvem some por diferença de caixa
+    const myId = loadSelection().name.trim().toLowerCase();
     let total = 0;
     let mine = 0;
     tasks?.forEach((t: any) => {
       if (t.archived) return;
-      const d = daysToDue(Number(t.committedDue) || 0, String(t.due || ""), String(t.col));
+      const d = daysToDue(
+        Number(t.committedDue) || 0,
+        String(t.due || ""),
+        String(t.col),
+        Number(t.blockedMs) || 0,
+      );
       if (d !== null && d < 0) {
         total++;
-        if (myName && t.assignee === myName) mine++;
+        if (myId && String(t.assignee || "").trim().toLowerCase() === myId) mine++;
       }
     });
     this.myOverdue = mine; // alimenta a nuvem privada (update())
