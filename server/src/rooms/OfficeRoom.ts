@@ -4,7 +4,14 @@ import { OfficeState } from "../schema/OfficeState";
 import { Player } from "../schema/Player";
 import { Task } from "../schema/Task";
 import { loadBoard, saveBoard, flushBoardSync, type TaskData, type ClientColor } from "../board/store";
-import { flushProgressSync } from "../progress/store";
+import {
+  flushProgressSync,
+  awardPE,
+  clawbackPE,
+  getProgressView,
+  normId,
+  type ProgressView,
+} from "../progress/store";
 import { getFlags } from "../gamification/flags";
 import { reviewDelivery } from "../gamification/aiReview";
 
@@ -18,6 +25,10 @@ const MAP_W = 960;
 const MAP_H = 1824;
 const COLS = new Set(["backlog", "afazer", "fazendo", "travado", "feito"]);
 const UNITS = new Set(["", "ia", "mkt"]); // empresa dona da tarefa
+const SIZES = new Set(["", "PP", "P", "M", "G", "GG"]); // F6 — tamanho (T-shirt)
+const WEIGHTS = new Set([70, 100, 150]); // F6 — peso do cliente (×0.7/1.0/1.5)
+// F6 — Pontos de Entrega: PE_base = Tamanho × PesoCliente; modulado pelo FatorPrazo.
+const SIZE_PE: Record<string, number> = { PP: 1, P: 2, M: 3, G: 5, GG: 8 };
 
 // mesma paleta/hash do cliente (kanban.ts) — cor automatica deterministica por nome,
 // usada ao auto-registrar um cliente/membro novo no respectivo registro de cores.
@@ -68,6 +79,9 @@ export class OfficeRoom extends Room<OfficeState> {
       t.aiScore = typeof d.aiScore === "number" ? d.aiScore : -1;
       t.aiNote = String(d.aiNote ?? "");
       t.blockReason = String(d.blockReason ?? "");
+      t.scoreAwarded = Number(d.scoreAwarded) || 0;
+      t.size = SIZES.has(String(d.size)) ? String(d.size) : "";
+      t.clientWeight = WEIGHTS.has(Number(d.clientWeight)) ? Number(d.clientWeight) : 100;
       this.state.tasks.set(t.id, t);
     }
     for (const c of board.clients) {
@@ -165,6 +179,8 @@ export class OfficeRoom extends Room<OfficeState> {
           client?: string;
           due?: string;
           unit?: string;
+          size?: string;
+          clientWeight?: number;
         },
       ) => {
         const col = COLS.has(String(msg?.col)) ? String(msg.col) : "backlog";
@@ -179,6 +195,8 @@ export class OfficeRoom extends Room<OfficeState> {
         this.markColumn(t, col); // carimba caso ja nasca em "fazendo"/"feito"
         t.col = col;
         t.unit = UNITS.has(String(msg?.unit)) ? String(msg.unit) : "";
+        t.size = SIZES.has(String(msg?.size)) ? String(msg.size) : "";
+        t.clientWeight = WEIGHTS.has(Number(msg?.clientWeight)) ? Number(msg.clientWeight) : 100;
         let maxOrder = -1; // posiciona no fim da coluna
         this.state.tasks.forEach((x) => {
           if (x.col === col && x.order > maxOrder) maxOrder = x.order;
@@ -205,6 +223,8 @@ export class OfficeRoom extends Room<OfficeState> {
           col?: string;
           archived?: boolean;
           unit?: string;
+          size?: string;
+          clientWeight?: number;
         },
       ) => {
         const t = this.state.tasks.get(String(msg?.id ?? ""));
@@ -221,6 +241,8 @@ export class OfficeRoom extends Room<OfficeState> {
         }
         if (typeof msg.archived === "boolean") t.archived = msg.archived;
         if (typeof msg.unit === "string" && UNITS.has(msg.unit)) t.unit = msg.unit;
+        if (typeof msg.size === "string" && SIZES.has(msg.size)) t.size = msg.size;
+        if (typeof msg.clientWeight === "number" && WEIGHTS.has(msg.clientWeight)) t.clientWeight = msg.clientWeight;
         this.register(this.state.clientColors, t.client);
         this.register(this.state.memberColors, t.assignee);
         if (COLS.has(String(msg?.col)) && msg.col !== t.col) {
@@ -290,6 +312,7 @@ export class OfficeRoom extends Room<OfficeState> {
       t.verified = true;
       t.verifiedBy = (p?.memberId || p?.name || "").slice(0, 60);
       t.verifiedAt = Date.now();
+      this.creditIfVerified(t); // F6: libera o escrow -> credita PE (idempotente)
       this.persistBoard();
     });
 
@@ -417,6 +440,12 @@ export class OfficeRoom extends Room<OfficeState> {
 
   /** Zera todo o estado de entrega/escrow de um card (retrabalho ou "Devolver"). */
   private resetDelivery(t: Task) {
+    // F6: se já creditou PE, estorna (escrow revogado) ANTES de limpar o scoreAwarded.
+    if (getFlags().progression && t.scoreAwarded > 0) {
+      const who = normId(t.assignee);
+      if (who) this.sendProgressTo(who, clawbackPE(who, t.scoreAwarded));
+    }
+    t.scoreAwarded = 0;
     t.delivered = false;
     t.verified = false;
     t.proof = "";
@@ -427,6 +456,39 @@ export class OfficeRoom extends Room<OfficeState> {
     t.verifiedAt = 0;
     t.aiScore = -1;
     t.aiNote = "";
+  }
+
+  /** F6 — PE creditado: Tamanho × PesoCliente × FatorPrazo. (FatorRetrabalho vem do clawback.) */
+  private computePE(t: Task): number {
+    const base = SIZE_PE[t.size] ?? SIZE_PE.M; // default M se o tamanho não foi setado
+    const peso = (t.clientWeight || 100) / 100; // 70→0.7, 100→1.0, 150→1.5
+    // FatorPrazo: deliveredAt (servidor) vs committedDue (congelado). Atrasou -> ×0.6 (ainda paga).
+    const atrasou = t.committedDue > 0 && t.deliveredAt > 0 && t.deliveredAt > t.committedDue;
+    return Math.round(base * peso * (atrasou ? 0.6 : 1.0) * 10) / 10;
+  }
+
+  /** F6 — credita PE ao RESPONSÁVEL quando a entrega vira Verificada. Idempotente (scoreAwarded). */
+  private creditIfVerified(t: Task) {
+    if (!getFlags().progression) return;
+    if (!t.verified || t.scoreAwarded > 0) return; // não verificada ou já creditada
+    const who = normId(t.assignee);
+    if (!who) return; // sem responsável -> não há a quem creditar
+    const pe = this.computePE(t);
+    if (pe <= 0) return;
+    t.scoreAwarded = pe; // marca ANTES de persistir (anti-crédito-duplo)
+    this.sendProgressTo(who, awardPE(who, t.assignee, pe));
+  }
+
+  /** Manda o progresso atualizado pro cliente daquele membro, se online (HUD privado). */
+  private sendProgressTo(memberId: string, view: ProgressView | undefined) {
+    if (!view) return;
+    for (const c of this.clients) {
+      const p = this.state.players.get(c.sessionId);
+      if (p?.memberId && p.memberId === memberId) {
+        c.send("progress:self", view);
+        return;
+      }
+    }
   }
 
   /**
@@ -465,6 +527,7 @@ export class OfficeRoom extends Room<OfficeState> {
       t.verifiedAt = Date.now();
       t.aiScore = result.score;
       t.aiNote = result.note;
+      this.creditIfVerified(t); // F6: a IA aprovou -> credita PE (idempotente)
       this.persistBoard();
       client?.send("ai:feedback", { status: "verified", score: result.score, note: result.note });
     } else {
@@ -520,6 +583,9 @@ export class OfficeRoom extends Room<OfficeState> {
         aiScore: t.aiScore,
         aiNote: t.aiNote,
         blockReason: t.blockReason,
+        scoreAwarded: t.scoreAwarded,
+        size: t.size,
+        clientWeight: t.clientWeight,
       });
     });
     const clients: ClientColor[] = [];
@@ -539,6 +605,11 @@ export class OfficeRoom extends Room<OfficeState> {
     p.moving = false;
     p.memberId = String(options.memberId ?? "").slice(0, 40); // identidade de gamificacao
     this.state.players.set(client.sessionId, p);
+    // F6: re-hidrata o progresso persistido e manda pro HUD do próprio jogador (privado).
+    if (getFlags().progression && p.memberId) {
+      const view = getProgressView(p.memberId);
+      if (view) client.send("progress:self", view);
+    }
     console.log(`[OfficeRoom] entrou: ${p.name} (${client.sessionId}) — ${this.clients.length} online`);
   }
 

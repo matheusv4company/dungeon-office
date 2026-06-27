@@ -349,3 +349,54 @@ como era antes); `task:block` vira no-op.
 - **Off-by-one entre fusos** (herdado do daysToDue): mesmo do F4, risco nulo pro time BR.
 
 **Ficou de fora:** sugerir "quem está online e perto" pra reforço (o broadcast vai pra todos; refinamento futuro).
+
+---
+
+## F6 — Progressão PE/XP/Nível ✅ FEITO
+**Commit:** (ver `git log`) · **Flag:** `GAMIF_PROGRESSION` (default ON). **Desligar:** `GAMIF_PROGRESSION=0`.
+
+**O que entrou (engine no SERVIDOR, idempotente):**
+- `server/src/progress/store.ts` — `MemberProgress` ganhou `weeks` (PE/semana), `delivered`, `lastDeliveryAt`
+  (migração defensiva v1→v2 no loader). Funções: `xpForLevel(L)=round(40·(L-1)^1.35)` (L1=0, L2=40, L3≈102),
+  `levelFromXp` (teto Lv50), `awardPE`, `clawbackPE`, `getProgressView` (nível, XP no nível, weekPE, baseline,
+  **% vs própria média** — nunca ranking).
+- `Task` — `scoreAwarded` (idempotência: PE creditado por esta entrega), `size` ("PP".."GG"), `clientWeight`
+  (70/100/150). Espelhados em store/loader/persist.
+- `server/src/rooms/OfficeRoom.ts` — `computePE = SIZE_PE[size] × (clientWeight/100) × FatorPrazo`
+  (FatorPrazo ×0.6 se `deliveredAt > committedDue`); `creditIfVerified` (chamado no `task:verify` E no
+  `runAiReview` >=7, guardado por `scoreAwarded>0`); clawback no `resetDelivery` (devolução/retrabalho);
+  `task:create`/`task:update` aceitam size+clientWeight; `onJoin` re-hidrata e manda `progress:self` privado;
+  `sendProgressTo` acha o cliente do membro creditado.
+- `client/src/ui/kanban.ts` — editor ganhou selects **Tamanho** + **Peso do cliente** (só com flag on).
+- `client/src/scenes/OfficeScene.ts` — HUD discreto (canto inf-esquerdo): "⭐ Nível N · X entregas", barra de XP no
+  nível, "X/Y XP · % da sua média / N PE esta semana". Atualiza via `onMessage("progress:self")`.
+
+**Como desligar:** `GAMIF_PROGRESSION=0` → sem crédito de PE, sem HUD, sem selects de size/peso no editor.
+
+**QA feito (tudo ✅):**
+- Engine (node, build de prod): award +12 → xp12/lvl1; 4×12=48 → lvl2 (cruza 40); clawback → lvl volta; persiste
+  `weeks`/`delivered`; cria registro sem PIN pra quem não logou.
+- Fórmulas: `xpForLevel` L2=40/L3=102; `levelFromXp` boundaries 39→1, 40→2, 102→3.
+- Integração (browser): tarefa GG+estratégico → **PE=12** (8×1.5×1.0, número bate); HUD "Nível 1 · 12/40 XP · 12 PE".
+- **Idempotência:** 2× `task:verify` → scoreAwarded continua 12 (sem dobrar).
+- **Clawback:** `task:undeliver` → xp/HUD voltam a 0.
+- **Persistência:** `server/data/progress.json` com Pedro xp:12; **re-hidratação no reconnect** → HUD volta com 12 no join.
+- **OFF** (flag mutado): HUD não recria; servidor não credita (mesmo padrão de guarda).
+- HUD convive com clima (F5) e nuvem; voz/kanban intactos.
+
+**Riscos/decisões tomadas sozinho:**
+- **Credita o ASSIGNEE** (`normId(t.assignee)`) — o responsável pelo trabalho. Edge: se reassignar entre creditar e
+  devolver, o clawback bate no novo assignee (raro; documentado). PE só credita se há assignee.
+- **Nível segue o XP no clawback** (escrow revogado pré-aceite). O design diz "nível nunca regride" pro estágio
+  CONFIRMADO (aceite-auto após N dias, não implementado); no escrow a revogação é válida. Documentado.
+- **FatorPrazo simples** (no prazo ×1.0 / atrasado ×0.6). O ×1.0 de "atraso por dependência externa" (travado
+  aguardando_cliente) não foi implementado (o blockReason some ao destravar) — refinamento futuro.
+- **% vs baseline** = média das últimas até-4 semanas anteriores; sem base ainda → mostra "N PE esta semana" (sem
+  número de %). NUNCA é ranking entre pessoas, e o % nunca pune (só informa).
+- **HUD por mensagem privada** (`progress:self`), não por schema no Player — mantém o XP do indivíduo fora do estado
+  público (o nível público pra cosméticos vem no F8 se preciso).
+- **Sem backdoor de XP** pra QA (segurança): testei via entregas reais + node. (Os `window.__gam` dev-helpers
+  existentes — flags/reloadConfig — ficam; não adicionei injeção de XP no servidor.)
+
+**Ficou de fora:** aceite-automático após N dias úteis; streak/buffs voláteis (parte no F7/F9); UI de "size travado
+ao entrar em fazendo" (anti-sandbagging — o campo existe, a trava é refinamento).

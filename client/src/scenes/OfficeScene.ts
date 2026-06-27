@@ -117,6 +117,8 @@ export class OfficeScene extends Phaser.Scene {
   private climateEl?: HTMLDivElement; // badge HUD do clima (DOM)
   private climateLabel?: HTMLSpanElement;
   private climateTimer?: ReturnType<typeof setInterval>;
+  // F6 — HUD discreto do MEU progresso (nível/XP/% vs própria média)
+  private progressEl?: HTMLDivElement;
   private prevHand = new Map<string, boolean>(); // sid -> mao levantada (p/ detectar a subida)
 
   // bola de fogo (espaco) — efeito efemero sincronizado
@@ -186,6 +188,8 @@ export class OfficeScene extends Phaser.Scene {
     this.climateLabel = undefined;
     this.localCloud = undefined;
     this.myOverdue = 0;
+    this.progressEl?.remove();
+    this.progressEl = undefined;
     this.voiceBtn = undefined;
     this.shareBtn = undefined;
     this.micBtn = undefined;
@@ -388,8 +392,9 @@ export class OfficeScene extends Phaser.Scene {
     this.setupUiCameraAndZoom([instr]);
     this.setupTouchControls(); // joystick + botão de fogo (só no toque)
 
-    // ---- clima do escritório (F5) + multiplayer ----
+    // ---- clima do escritório (F5) + progresso (F6) + multiplayer ----
     this.setupClimate();
+    this.setupProgress();
     void this.connectMultiplayer(sel.name || "Convidado", spawnX, spawnY);
   }
 
@@ -411,6 +416,8 @@ export class OfficeScene extends Phaser.Scene {
       this.climateTimer = undefined;
       this.climateEl?.remove();
       this.climateEl = undefined;
+      this.progressEl?.remove();
+      this.progressEl = undefined;
       this.kanban?.destroy();
       this.kanban = undefined;
       if (this.onResizeRef) {
@@ -526,6 +533,30 @@ export class OfficeScene extends Phaser.Scene {
       this.playBeep();
       this.showToast(`🆘 ${String(m?.name ?? "Alguém")} pediu reforço!`, "#b9892a", 3000);
     });
+    // F6: meu progresso (privado) — re-hidratado no join e atualizado a cada entrega creditada.
+    room.onMessage(
+      "progress:self",
+      (v: {
+        level?: number;
+        xpInLevel?: number;
+        xpToNext?: number;
+        weekPE?: number;
+        baseline?: number;
+        pct?: number;
+        delivered?: number;
+      }) => {
+        if (this.room !== room) return;
+        this.updateProgressHud({
+          level: Number(v?.level ?? 1),
+          xpInLevel: Number(v?.xpInLevel ?? 0),
+          xpToNext: Number(v?.xpToNext ?? 0),
+          weekPE: Number(v?.weekPE ?? 0),
+          baseline: Number(v?.baseline ?? 0),
+          pct: Number(v?.pct ?? 0),
+          delivered: Number(v?.delivered ?? 0),
+        });
+      },
+    );
     this.refreshRoster();
     this.showReconnecting(false);
   }
@@ -838,6 +869,49 @@ export class OfficeScene extends Phaser.Scene {
     if (!this.room) return;
     this.room.send("help:call", {});
     this.showToast("🆘 Reforço chamado pro time!", "#b9892a", 1800);
+  }
+
+  // ---------- F6: HUD do meu progresso (privado, sem ranking) ----------
+
+  /** Cria o pill discreto do meu progresso (canto inferior-esquerdo). Só com o flag on. */
+  private setupProgress() {
+    if (!getFlags().progression || this.progressEl) return;
+    const el = document.createElement("div");
+    el.style.cssText =
+      "position:fixed;left:12px;bottom:12px;z-index:9998;background:#15131dcc;border:1px solid #3a3550;" +
+      "border-radius:10px;padding:7px 11px;font:12px system-ui,Segoe UI;color:#e8e0c8;" +
+      "box-shadow:0 4px 16px #0007;min-width:150px;max-width:230px;";
+    el.innerHTML = `<div style="opacity:.6">⭐ seu progresso aparece aqui</div>`;
+    document.body.appendChild(el);
+    this.progressEl = el;
+  }
+
+  /**
+   * Atualiza o HUD com o progresso vindo do servidor (mensagem privada "progress:self").
+   * Todos os valores são NUMÉRICOS (sem string de usuário) — innerHTML aqui é seguro.
+   * O "%" é contra a PRÓPRIA média (nunca ranking), e só aparece quando há base; nunca pune.
+   */
+  private updateProgressHud(v: {
+    level: number;
+    xpInLevel: number;
+    xpToNext: number;
+    weekPE: number;
+    baseline: number;
+    pct: number;
+    delivered: number;
+  }) {
+    this.setupProgress();
+    if (!this.progressEl) return;
+    const barPct = v.xpToNext > 0 ? Math.min(100, Math.round((v.xpInLevel / v.xpToNext) * 100)) : 100;
+    const next = v.xpToNext > 0 ? `${v.xpInLevel}/${v.xpToNext} XP` : "nível máximo ⭐";
+    const base =
+      v.baseline > 0 ? `📈 ${v.pct}% da sua média` : `${v.weekPE} PE esta semana`;
+    this.progressEl.innerHTML =
+      `<div style="font-weight:700;margin-bottom:3px;">⭐ Nível ${v.level} ` +
+      `<span style="opacity:.6;font-weight:400">· ${v.delivered} entregas</span></div>` +
+      `<div style="height:6px;background:#2a2636;border-radius:99px;overflow:hidden;margin:3px 0;">` +
+      `<div style="height:100%;width:${barPct}%;background:#ffd36b;"></div></div>` +
+      `<div style="opacity:.85;font-size:11px;">${next} · ${base}</div>`;
   }
 
   private refreshRoster() {

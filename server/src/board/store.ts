@@ -30,6 +30,9 @@ export type TaskData = {
   aiScore?: number;
   aiNote?: string;
   blockReason?: string;
+  scoreAwarded?: number;
+  size?: string;
+  clientWeight?: number;
 };
 
 export type ClientColor = { name: string; color: string };

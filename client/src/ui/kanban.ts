@@ -37,6 +37,9 @@ type TaskView = {
   // F4 — atraso amigável
   committedDue: number; // prazo congelado (ms); 0 = ainda não congelado, cai no due
   blockReason: string; // motivo do "Travado" (pausa o relógio)
+  // F6 — progressão (peso pra PE)
+  size: string; // "" | PP | P | M | G | GG
+  clientWeight: number; // 70 | 100 | 150
 };
 
 // empresas (categoria IA / Marketing) — rotulo + cor do selo no card
@@ -48,6 +51,20 @@ const UNIT_OPTS: { value: string; label: string }[] = [
   { value: "", label: "— nenhuma —" },
   { value: "ia", label: "IA" },
   { value: "mkt", label: "Marketing" },
+];
+// F6 — tamanho (esforço) e peso do cliente, que pesam os Pontos de Entrega
+const SIZE_OPTS: { value: string; label: string }[] = [
+  { value: "", label: "— tamanho — (assume M)" },
+  { value: "PP", label: "PP — mínimo" },
+  { value: "P", label: "P — pequeno" },
+  { value: "M", label: "M — médio" },
+  { value: "G", label: "G — grande" },
+  { value: "GG", label: "GG — enorme" },
+];
+const WEIGHT_OPTS: { value: number; label: string }[] = [
+  { value: 70, label: "Interno / baixa criticidade (×0.7)" },
+  { value: 100, label: "Normal (×1.0)" },
+  { value: 150, label: "Estratégico / crítico (×1.5)" },
 ];
 
 // paleta fixa de cores p/ chips automaticos (consistente por nome)
@@ -439,6 +456,7 @@ export class KanbanBoard {
         deliverNote: t.deliverNote ?? "", verified: !!t.verified,
         aiScore: typeof t.aiScore === "number" ? t.aiScore : -1, aiNote: t.aiNote ?? "",
         committedDue: typeof t.committedDue === "number" ? t.committedDue : 0, blockReason: t.blockReason ?? "",
+        size: t.size ?? "", clientWeight: typeof t.clientWeight === "number" ? t.clientWeight : 100,
       }),
     );
     return out;
@@ -896,6 +914,19 @@ export class KanbanBoard {
     for (const o of UNIT_OPTS) unitSel.appendChild(new Option(o.label, o.value));
     unitSel.value = task?.unit ?? "";
     mk("Empresa (IA / Marketing)", unitSel);
+    // F6 — tamanho + peso do cliente (pesam os PE). Só com o flag de progressão on.
+    let sizeSel: HTMLSelectElement | undefined;
+    let weightSel: HTMLSelectElement | undefined;
+    if (getFlags().progression) {
+      sizeSel = document.createElement("select");
+      for (const o of SIZE_OPTS) sizeSel.appendChild(new Option(o.label, o.value));
+      sizeSel.value = task?.size ?? "";
+      mk("Tamanho (esforço)", sizeSel);
+      weightSel = document.createElement("select");
+      for (const o of WEIGHT_OPTS) weightSel.appendChild(new Option(o.label, String(o.value)));
+      weightSel.value = String(task?.clientWeight ?? 100);
+      mk("Peso do cliente", weightSel);
+    }
     const due = document.createElement("input");
     due.type = "date";
     due.value = task?.due ?? "";
@@ -937,18 +968,21 @@ export class KanbanBoard {
     save.className = "kb-btn stream";
     save.textContent = "Salvar";
     save.onclick = () => {
-      const payload = {
+      const col = colSel.value;
+      const payload: Record<string, unknown> = {
         title: title.value.trim(),
         desc: desc.value,
         assignee: assignee.value.trim(),
         client: client.value.trim(),
         unit: unitSel.value,
         due: due.value,
-        col: colSel.value,
+        col,
       };
+      if (sizeSel) payload.size = sizeSel.value;
+      if (weightSel) payload.clientWeight = Number(weightSel.value);
       if (editing && task) {
         this.room.send("task:update", { id: task.id, ...payload });
-        this.maybePromptBlock(task.id, payload.col, task.col); // F4: motivo se foi pra Travado
+        this.maybePromptBlock(task.id, col, task.col); // F4: motivo se foi pra Travado
       } else {
         this.room.send("task:create", payload);
       }

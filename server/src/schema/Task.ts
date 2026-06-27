@@ -31,4 +31,8 @@ export class Task extends Schema {
   @type("string") aiNote = ""; // justificativa PUBLICA (so para entrega aprovada pela IA)
   // --- gamificacao F4: atraso amigavel ---
   @type("string") blockReason = ""; // motivo curto do "Travado" (pausa o relogio de atraso)
+  // --- gamificacao F6: progressao (idempotencia do credito) ---
+  @type("number") scoreAwarded = 0; // PE ja creditado por esta entrega (0 = nada; anti-credito-duplo)
+  @type("string") size = ""; // "PP|P|M|G|GG" (tamanho; default M no calculo se vazio)
+  @type("number") clientWeight = 100; // 70|100|150 (×0.7/1.0/1.5)
 }
