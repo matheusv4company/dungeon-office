@@ -516,3 +516,65 @@ dono valida abrindo 2 abas e jogando bola de fogo; a lógica `hit` usa attacker.
 
 **Ficou de fora:** anel/aura/cor-da-fireball (objetos por-frame); QA visual ao vivo (browser do ambiente morto —
 validação visual fica pro dono).
+
+---
+
+# 🏁 ESTADO FINAL DA SESSÃO (para o dono)
+
+**Entregue:** F0–F8 (todo o core). F9 (social/coop) NÃO foi feito (opcional, "se sobrar tempo"; o browser de QA
+do ambiente morreu, então não daria pra validar canvas com qualidade). Tudo no branch `gamificacao`, pushado pra
+`origin`; `main` intocado. Build de deploy (`npm run build`) verde. 3 reviews completos de alto esforço rodados
+(após F2, F3, F6) + review leve por feature; todos os achados tratados.
+
+## Como TESTAR LOCAL
+1. `npm run dev` na raiz (sobe server :2567 + client :5173). **Importante:** neste ambiente o Vite :5173 às vezes
+   não fica acessível — se for o caso, abra **http://localhost:2567** (o server serve o build do client; rode
+   `npm run build -w client` antes pra ter o `dist` atualizado).
+2. Login: escolha personagem → escolha o membro no dropdown + crie um PIN (4-8 díg) → entra. Próxima vez entra
+   direto ("trocar de pessoa" pra reverter). "Entrar como convidado" pula o progresso.
+3. Gestor de tarefas (botão no escritório): crie um card, mande pra "Feito" → botão **📤 Entregar** (cole um link
+   http) → selo "aguardando" → a IA avalia (ou **✓ Verificar** manual) → "✅ Verificado · IA N/10". Veja o HUD de
+   nível (canto inf-esq) subir e a celebração. Mande um card pra "Travado" → pede motivo, pausa o relógio de atraso.
+4. Cosméticos: abra 2 abas com 2 membros de níveis diferentes pra ver os títulos "Lv.N" e a celebração entre eles.
+
+## Como SUBIR PRA PROD (quando aprovar)
+1. `git checkout main && git merge gamificacao` (ou abra um PR `gamificacao`→`main` no GitHub e faça o merge).
+2. `git push origin main`.
+3. No **Coolify**, clique **Redeploy** no serviço (auto-deploy está OFF). ⚠️ O redeploy **derruba quem estiver
+   online** no momento — avise o time. O volume `/app/data` (board.json + progress.json) **persiste** no redeploy.
+4. A `ANTHROPIC_API_KEY` já está no env do Coolify (a IA do F3 funciona em prod; testei o build de prod localmente).
+
+## Tabela MANTER / DESLIGAR / REVERTER (por feature)
+Desligar = setar a env no Coolify (= `0`) e redeploy — **sem rebuild, sem reverter código**. Default de todas = LIGADO.
+
+| Feature | Flag (env) | Commit (`git revert <sha>`) |
+|---|---|---|
+| F0 infra de flags + /config | (sem flag; base) | `452795c` |
+| F1 login membro+PIN | `GAMIF_LOGIN=0` | `55e51f1` |
+| F2 gate de entrega | `GAMIF_GATE=0` | `8740036` |
+| F3 nota da IA | `GAMIF_AIREVIEW=0` | `ed333ea` |
+| F4 atraso amigável | `GAMIF_OVERDUE=0` | `e697cb3` |
+| F5 visão própria + clima | `GAMIF_CLIMATE=0` | `6801ed0` |
+| F6 progressão PE/XP/nível | `GAMIF_PROGRESSION=0` | `9ab23ba` |
+| F7 stats upside-only | `GAMIF_STATS=0` | `9908c8b` |
+| F8 cosméticos + celebração | `GAMIF_COSMETICS=0` | `f443af1` |
+| **TUDO (kill switch)** | `GAMIF_ALL=0` | — |
+| Correções dos reviews | — | `853deb8` (F0-F2), `81fb738` (F3), `d143a79` (F6) |
+
+> Aceita `0/false/off/no` pra desligar. Reverter os commits de correção sem reverter a feature pode quebrar — prefira
+> desligar pelo flag. Pra remover uma feature de vez, `git revert` o commit dela (e os de correção relacionados).
+
+## PENDENTE / revisar com olho humano
+- **F8 (cosméticos/celebração): QA VISUAL não feito** — o Chrome headless do ambiente exauriu o WebGL na sessão.
+  Lógica verificada (typecheck + review), mas **valide visualmente** (títulos Lv.N, tint Lv10, burst da celebração).
+  Se algo destoar, `GAMIF_COSMETICS=0`.
+- **F7 combate**: o dano da fireball por nível (`hit` usa o dmg do atacante) só foi verificado por código — **teste
+  com 2 abas** jogando bola de fogo. A barra de HP `hp/maxHp` e os bônus por nível foram verificados.
+- **SEGURANÇA do login (decisão de produto sua)**: o login é *trust-on-first-use* (1º a logar com um nome cria o PIN)
+  e `/members` é público. Mitiguei com rate-limit progressivo no `/login`, mas pra um repo público considere:
+  provisionar PINs fora de banda, ou um segredo de convite no 1º acesso, ou aceitar (time pequeno, identidade de
+  gamificação, baixo valor). Está documentado na seção do review F0–F2.
+- **F9 (social/coop)**: não implementado (opcional).
+- **Refinamentos deixados pra depois**: aceite-automático após N dias; streak + regen/escudo (precisam de tick no
+  servidor); anel/aura/cor-da-fireball (cosméticos por-frame); UI de "size travado ao entrar em Fazendo".
+- **Dados locais de QA**: limpei os cards de teste e resetei XP de Pedro/Ana no `data/` local. Em prod o volume é outro.
