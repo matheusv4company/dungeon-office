@@ -245,3 +245,25 @@ no botão "✓ Verificar"). Igual ao comportamento sem chave.
 
 **Ficou de fora:** crédito de PE/XP (F6 — hoje verified só libera o selo); reavaliação ao reentregar é automática
 (novo deliver dispara nova IA).
+
+---
+
+## ✅ REVIEW COMPLETO APÓS F3 — tratado
+Review de alto esforço (8 ângulos × verificação, ~48 agentes) sobre o delta (correções + F3). 10 achados,
+4 temas distintos, todos CONFIRMED e **corrigidos**. **Commit:** (ver `git log` — "fix(gamificacao): corrige race da IA...").
+
+- **RACE no `runAiReview` (entrega devolvida+reentregue na janela da IA):** a IA leva ~12-24s; se a entrega era
+  devolvida e reentregue nesse meio, o veredito ANTIGO aplicava na entrega NOVA (auto-verificava conteúdo que a IA
+  nunca viu; nota pública errada). **Fix:** captura `deliveredAt0` antes do `await` e aborta se `t.deliveredAt`
+  mudou (além de devolvida/movida/verificada). **QA:** entregar→devolver na janela → o veredito obsoleto abortou
+  (tarefa não verificada, aiScore=-1). ✅
+- **Feedback privado perdido na reconexão:** o `ai:feedback` ia pro `sessionId` capturado no deliver; se o
+  responsável reconectava (sessionId muda) o toast evaporava. **Fix:** `findDeliverer` roteia pelo `memberId` atual
+  (sobrevive à reconexão); convidado cai no sessionId. Se sair de vez, perde o toast (aceitável — reentrega/vê o
+  estado ao voltar).
+- **`deliverNote` privada vazando pro `aiNote` público:** numa entrega aprovada (>=7), a IA podia parafrasear a
+  nota privada do responsável dentro da justificativa pública. **Fix:** a `deliverNote` NÃO entra mais no prompt da
+  IA (privacidade > qualidade marginal da nota; desc + prova bastam pro score).
+- **Rate-limit fraco:** resetava `fails:0` → 5 tentativas novas a cada 30s (PIN 4-díg cairia em ~16h). **Fix:**
+  backoff PROGRESSIVO (cooldown dobra a cada bloqueio: 30s→1m→2m→…→1h, `lockouts` não zera) + prune do Map quando
+  cresce. **QA:** 5 erros → 429 (regressão do gate OK). Brute-force vira inviável.

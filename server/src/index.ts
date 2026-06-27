@@ -64,17 +64,26 @@ app.get("/members", async (_req, res) => {
   }
 });
 
-// Rate-limit simples por membro: trava o brute-force de PIN (espaco pequeno, 4-8 digitos).
-// Em memoria (some no restart) — suficiente pro escopo: 5 PINs errados -> 30s de espera.
-const loginGate = new Map<string, { fails: number; until: number }>();
+// Rate-limit por membro contra brute-force de PIN (espaco pequeno, 4-8 digitos). Em memoria
+// (some no restart). Backoff PROGRESSIVO: a cada bloqueio o cooldown dobra (30s,1m,2m,...,1h) e
+// o contador de bloqueios NAO zera — entao tentar de novo so endurece a trava (forca bruta vira
+// inviavel). Limpa o Map quando ele cresce (spray de nomes).
+const loginGate = new Map<string, { fails: number; lockouts: number; until: number }>();
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_COOLDOWN_MS = 30_000;
+const LOGIN_COOLDOWN_MAX = 60 * 60_000; // teto de 1h por bloqueio
+
+function pruneLoginGate(now: number) {
+  if (loginGate.size < 500) return; // so poda quando cresce demais
+  for (const [k, v] of loginGate) if (v.until <= now && v.fails === 0) loginGate.delete(k);
+}
 
 // Login por nome + PIN (1o acesso define o PIN; depois confere). Nunca expoe o hash.
 app.post("/login", (req, res) => {
   const body = (req.body ?? {}) as { member?: unknown; pin?: unknown };
   const key = normId(String(body.member ?? ""));
   const now = Date.now();
+  pruneLoginGate(now);
   const rec = loginGate.get(key);
   if (rec && rec.until > now) {
     // em cooldown: responde como "wrong" (sem revelar a trava) e nao gasta scrypt
@@ -83,11 +92,17 @@ app.post("/login", (req, res) => {
   }
   const result = login(String(body.member ?? ""), String(body.pin ?? ""));
   if (result.ok) {
-    loginGate.delete(key); // sucesso zera o contador
+    loginGate.delete(key); // sucesso zera tudo
   } else if (result.status === "wrong") {
-    const fails = (rec?.fails ?? 0) + 1;
-    if (fails >= LOGIN_MAX_FAILS) loginGate.set(key, { fails: 0, until: now + LOGIN_COOLDOWN_MS });
-    else loginGate.set(key, { fails, until: 0 });
+    const prev = rec ?? { fails: 0, lockouts: 0, until: 0 };
+    const fails = prev.fails + 1;
+    if (fails >= LOGIN_MAX_FAILS) {
+      const lockouts = prev.lockouts + 1;
+      const cooldown = Math.min(LOGIN_COOLDOWN_MS * 2 ** (lockouts - 1), LOGIN_COOLDOWN_MAX);
+      loginGate.set(key, { fails: 0, lockouts, until: now + cooldown });
+    } else {
+      loginGate.set(key, { fails, lockouts: prev.lockouts, until: 0 });
+    }
   }
   res.json(result);
 });

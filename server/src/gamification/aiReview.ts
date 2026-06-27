@@ -13,7 +13,8 @@ export type DeliveryInput = {
   client: string;
   unit: string; // "" | "ia" | "mkt"
   proof: string;
-  note: string;
+  // OBS: a deliverNote (nota privada do responsavel) NAO entra aqui de proposito — a IA pode
+  // parafrasea-la na justificativa publica (aiNote), vazando contexto interno. Privacidade > nota.
 };
 
 // Definition of Done curta por tipo (do design). A IA julga o quao PRONTA a entrega parece.
@@ -45,8 +46,7 @@ export async function reviewDelivery(input: DeliveryInput): Promise<AiReview | n
       `Tarefa: ${clamp(input.title, 200)}\n` +
       `Descricao: ${clamp(input.desc, 1500) || "(sem descricao)"}\n` +
       `Cliente: ${clamp(input.client, 80) || "(sem cliente)"}\n` +
-      `Prova (link, nao abrivel): ${clamp(input.proof, 300)}\n` +
-      `Nota do responsavel: ${clamp(input.note, 280) || "(nenhuma)"}\n\n` +
+      `Prova (link, nao abrivel): ${clamp(input.proof, 300)}\n\n` +
       `De a nota 0-10 de quao completa/pronta esta entrega parece e uma justificativa curta.`;
     const resp = await client.messages.create(
       { model: MODEL, max_tokens: 200, system, messages: [{ role: "user", content: user }] },

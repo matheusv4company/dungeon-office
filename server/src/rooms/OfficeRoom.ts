@@ -419,6 +419,7 @@ export class OfficeRoom extends Room<OfficeState> {
   private async runAiReview(taskId: string, sessionId: string) {
     const t0 = this.state.tasks.get(taskId);
     if (!t0) return;
+    const deliveredAt0 = t0.deliveredAt; // token de identidade DESTA entrega (anti-race)
     // snapshot pro prompt (a tarefa pode mudar enquanto a IA pensa)
     const result = await reviewDelivery({
       title: t0.title,
@@ -426,12 +427,13 @@ export class OfficeRoom extends Room<OfficeState> {
       client: t0.client,
       unit: t0.unit,
       proof: t0.proof,
-      note: t0.deliverNote,
     });
-    // re-busca: pode ter sido devolvida/movida/deletada enquanto a IA pensava -> ignora tardio
+    // re-busca: ignora resultado tardio se foi devolvida/movida/deletada/verificada OU
+    // RE-ENTREGUE no meio (deliveredAt mudou) — senao a nota da entrega antiga aplicaria na nova.
     const t = this.state.tasks.get(taskId);
-    if (!t || !t.delivered || t.col !== "feito" || t.verified) return;
-    const client = this.clients.find((c) => c.sessionId === sessionId);
+    if (!t || !t.delivered || t.col !== "feito" || t.verified || t.deliveredAt !== deliveredAt0) return;
+    // feedback vai pro DONO ATUAL da entrega (sobrevive a reconexao via memberId; convidado cai no sessionId)
+    const client = this.findDeliverer(t.deliveredBy, sessionId);
     if (!result) {
       // degradou: entrega fica em escrow (verificacao manual). Avisa so o responsavel.
       client?.send("ai:feedback", { status: "unavailable", score: -1, note: "" });
@@ -451,6 +453,22 @@ export class OfficeRoom extends Room<OfficeState> {
       const status = result.score >= 4 ? "partial" : "low";
       client?.send("ai:feedback", { status, score: result.score, note: result.note });
     }
+  }
+
+  /**
+   * Acha o cliente que e o DONO ATUAL da entrega. Por memberId (sobrevive a reconexao: o
+   * sessionId muda, mas o memberId nao). Convidado (deliveredBy = nome, sem memberId) cai no
+   * sessionId capturado no deliver. Se ninguem casar (saiu de vez), o feedback se perde — ok:
+   * a entrega fica em escrow e ele reentrega/ve o estado quando voltar.
+   */
+  private findDeliverer(deliveredBy: string, fallbackSessionId: string): Client | undefined {
+    if (deliveredBy) {
+      for (const c of this.clients) {
+        const p = this.state.players.get(c.sessionId);
+        if (p?.memberId && p.memberId === deliveredBy) return c;
+      }
+    }
+    return this.clients.find((c) => c.sessionId === fallbackSessionId);
   }
 
   /** Serializa o board atual (tarefas + cores de cliente/membro) e agenda a gravacao. */
