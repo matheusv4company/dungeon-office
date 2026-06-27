@@ -6,6 +6,8 @@ import { Server } from "colyseus";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { AccessToken } from "livekit-server-sdk";
 import { OfficeRoom } from "./rooms/OfficeRoom";
+import { loadBoard } from "./board/store";
+import { login } from "./progress/store";
 
 // Carrega server/.env (chaves do LiveKit), se existir. Node 20.12+/26.
 try {
@@ -21,6 +23,7 @@ const LK_SECRET = process.env.LIVEKIT_API_SECRET;
 const voiceReady = !!(LK_URL && LK_KEY && LK_SECRET);
 
 const app = express();
+app.use(express.json());
 app.use((_req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Headers", "Content-Type");
@@ -42,6 +45,22 @@ app.get("/token", async (req, res) => {
   const at = new AccessToken(LK_KEY, LK_SECRET, { identity, name, ttl: "12h" });
   at.addGrant({ roomJoin: true, room: "office", canPublish: true, canSubscribe: true });
   res.json({ token: await at.toJwt(), url: LK_URL });
+});
+
+// Lista de membros (pro dropdown de login) — nomes do registro de membros do board.
+app.get("/members", async (_req, res) => {
+  try {
+    const board = await loadBoard();
+    res.json({ members: board.members.map((m) => m.name).filter(Boolean) });
+  } catch {
+    res.json({ members: [] });
+  }
+});
+
+// Login por nome + PIN (1o acesso define o PIN; depois confere). Nunca expoe o hash.
+app.post("/login", (req, res) => {
+  const body = (req.body ?? {}) as { member?: unknown; pin?: unknown };
+  res.json(login(String(body.member ?? ""), String(body.pin ?? "")));
 });
 
 // Cliente estatico (build do Vite). __dirname = server/dist -> ../../client/dist

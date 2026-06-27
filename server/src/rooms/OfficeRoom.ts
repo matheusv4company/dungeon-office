@@ -4,8 +4,9 @@ import { OfficeState } from "../schema/OfficeState";
 import { Player } from "../schema/Player";
 import { Task } from "../schema/Task";
 import { loadBoard, saveBoard, flushBoardSync, type TaskData, type ClientColor } from "../board/store";
+import { flushProgressSync } from "../progress/store";
 
-type JoinOptions = { name?: string; charId?: number; x?: number; y?: number };
+type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; memberId?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
 type CallMsg = { to?: string };
 
@@ -367,6 +368,7 @@ export class OfficeRoom extends Room<OfficeState> {
     p.y = Number.isFinite(options.y) ? Number(options.y) : 592;
     p.dir = 0;
     p.moving = false;
+    p.memberId = String(options.memberId ?? "").slice(0, 40); // identidade de gamificacao
     this.state.players.set(client.sessionId, p);
     console.log(`[OfficeRoom] entrou: ${p.name} (${client.sessionId}) — ${this.clients.length} online`);
   }
@@ -381,6 +383,7 @@ export class OfficeRoom extends Room<OfficeState> {
     // No redeploy do Coolify (SIGTERM) o Colyseus faz shutdown gracioso e chama
     // onDispose — sem isso as ultimas alteracoes do board se perderiam.
     flushBoardSync();
-    console.log("[OfficeRoom] sala encerrada (board gravado)");
+    flushProgressSync(); // grava o progresso de gamificacao pendente tambem
+    console.log("[OfficeRoom] sala encerrada (board + progresso gravados)");
   }
 }

@@ -22,4 +22,6 @@ export class Player extends Schema {
   @type("number") t = 0;
   /** esta "streamando" o gestor de tarefas (quem esta perto ve/edita junto) */
   @type("boolean") streamingBoard = false;
+  /** identidade duravel de gamificacao (nome do membro normalizado); "" = convidado */
+  @type("string") memberId = "";
 }
