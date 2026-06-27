@@ -50,6 +50,10 @@ export class OfficeRoom extends Room<OfficeState> {
       t.order = Number(d.order) || 0;
       t.archived = !!d.archived;
       t.unit = UNITS.has(String(d.unit)) ? String(d.unit) : "";
+      t.createdAt = Number(d.createdAt) || 0;
+      t.completedAt = Number(d.completedAt) || 0;
+      t.committedDue = Number(d.committedDue) || 0;
+      t.dueChanges = Number(d.dueChanges) || 0;
       this.state.tasks.set(t.id, t);
     }
     for (const c of board.clients) {
@@ -149,6 +153,8 @@ export class OfficeRoom extends Room<OfficeState> {
         t.assignee = String(msg?.assignee ?? "").slice(0, 60);
         t.client = String(msg?.client ?? "").slice(0, 60);
         t.due = String(msg?.due ?? "").slice(0, 10);
+        t.createdAt = Date.now();
+        this.markColumn(t, col); // carimba caso ja nasca em "fazendo"/"feito"
         t.col = col;
         t.unit = UNITS.has(String(msg?.unit)) ? String(msg.unit) : "";
         let maxOrder = -1; // posiciona no fim da coluna
@@ -185,13 +191,19 @@ export class OfficeRoom extends Room<OfficeState> {
         if (typeof msg.desc === "string") t.desc = msg.desc.slice(0, 4000);
         if (typeof msg.assignee === "string") t.assignee = msg.assignee.slice(0, 60);
         if (typeof msg.client === "string") t.client = msg.client.slice(0, 60);
-        if (typeof msg.due === "string") t.due = msg.due.slice(0, 10);
+        if (typeof msg.due === "string") {
+          const newDue = msg.due.slice(0, 10);
+          if (newDue !== t.due && t.col !== "backlog") t.dueChanges++; // empurrou prazo apos comecar
+          t.due = newDue;
+          if (t.col !== "backlog") this.freezeCommittedDue(t); // congela se ainda nao tinha
+        }
         if (typeof msg.archived === "boolean") t.archived = msg.archived;
         if (typeof msg.unit === "string" && UNITS.has(msg.unit)) t.unit = msg.unit;
         this.register(this.state.clientColors, t.client);
         this.register(this.state.memberColors, t.assignee);
         if (COLS.has(String(msg?.col)) && msg.col !== t.col) {
           // trocou de coluna pelo modal: vai pro fim da coluna nova
+          this.markColumn(t, String(msg.col)); // carimba ANTES de sobrescrever
           t.col = String(msg.col);
           let maxOrder = -1;
           this.state.tasks.forEach((x) => {
@@ -206,7 +218,10 @@ export class OfficeRoom extends Room<OfficeState> {
     this.onMessage("task:move", (_c, msg: { id?: string; col?: string; order?: number }) => {
       const t = this.state.tasks.get(String(msg?.id ?? ""));
       if (!t) return;
-      if (COLS.has(String(msg?.col))) t.col = String(msg.col);
+      if (COLS.has(String(msg?.col))) {
+        this.markColumn(t, String(msg.col)); // carimba ANTES de sobrescrever
+        t.col = String(msg.col);
+      }
       if (typeof msg.order === "number" && Number.isFinite(msg.order)) t.order = msg.order;
       this.persistBoard();
     });
@@ -297,6 +312,25 @@ export class OfficeRoom extends Room<OfficeState> {
     if (name && !map.has(name)) map.set(name, autoHex(name));
   }
 
+  /** Congela o prazo (committedDue, ms = fim do dia da entrega) na 1a vez — anti "empurrar prazo". */
+  private freezeCommittedDue(t: Task) {
+    if (t.committedDue !== 0 || !t.due) return;
+    const ms = Date.parse(t.due + "T23:59:59");
+    if (Number.isFinite(ms)) t.committedDue = ms;
+  }
+
+  /**
+   * Carimba transicoes de coluna (base da gamificacao). Chamar ANTES de sobrescrever t.col,
+   * pelos DOIS caminhos que mudam coluna (task:move no drag e task:update pelo modal).
+   * - ao iniciar ("fazendo"): congela committedDue (prazo comprometido).
+   * - 1a vez em "feito": carimba completedAt do SERVIDOR (autoritativo).
+   */
+  private markColumn(t: Task, newCol: string) {
+    if (newCol === t.col) return;
+    if (newCol === "fazendo") this.freezeCommittedDue(t);
+    if (newCol === "feito" && t.completedAt === 0) t.completedAt = Date.now();
+  }
+
   /** Serializa o board atual (tarefas + cores de cliente/membro) e agenda a gravacao. */
   private persistBoard() {
     const tasks: TaskData[] = [];
@@ -312,6 +346,10 @@ export class OfficeRoom extends Room<OfficeState> {
         order: t.order,
         archived: t.archived,
         unit: t.unit,
+        createdAt: t.createdAt,
+        completedAt: t.completedAt,
+        committedDue: t.committedDue,
+        dueChanges: t.dueChanges,
       });
     });
     const clients: ClientColor[] = [];

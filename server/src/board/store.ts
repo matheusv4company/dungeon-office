@@ -13,6 +13,11 @@ export type TaskData = {
   order: number;
   archived: boolean;
   unit: string; // "" | "ia" | "mkt"
+  // gamificacao (opcionais p/ compat com board.json antigo)
+  createdAt?: number;
+  completedAt?: number;
+  committedDue?: number;
+  dueChanges?: number;
 };
 
 export type ClientColor = { name: string; color: string };
