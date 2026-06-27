@@ -24,4 +24,6 @@ export class Task extends Schema {
   @type("string") proof = ""; // link/evidencia verificavel da entrega (clamp 300)
   @type("string") deliverNote = ""; // nota curta da entrega (clamp 280)
   @type("boolean") verified = false; // sign-off / verificado (libera o escrow em F3/F6)
+  @type("string") verifiedBy = ""; // quem deu o sign-off (carimbo do servidor; anti-conluio em F6)
+  @type("number") verifiedAt = 0; // ms do sign-off (carimbo do servidor)
 }

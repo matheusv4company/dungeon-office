@@ -160,3 +160,36 @@ BootScene faz `await loadConfig()` antes de abrir a tela.)
 
 **Ficou de fora:** verificação automática por IA (é o F3); crédito de pontos (é o F6); aceite-automático após N dias
 (não implementado — pode entrar no F6/F9).
+
+---
+
+## ✅ REVIEW COMPLETO F0–F2 (checkpoint "a cada 3 features") — tratado
+Rodado um review de alto esforço (8 ângulos × verificação adversarial, ~48 agentes). 10 achados; consolidados
+e tratados. **Commit das correções:** (ver `git log` — "fix(gamificacao): hardening do gate + login").
+
+**Corrigidos (no escopo, com QA):**
+- **A — escrow furado ao sair de "Feito":** `markColumn` agora chama `resetDelivery(t)` quando o card sai de
+  "feito" (retrabalho). Antes, um card Verificado voltava do "fazendo" ainda ✅ com a prova antiga, sem reentrega.
+  QA: entregar+verificar → mover pra fazendo → TODOS os campos de entrega zerados. ✅
+- **C — reentrega forjada sobrescrevia o carimbo:** `task:deliver` agora ignora se `t.delivered` já é true
+  (precisa "Devolver" antes). QA: 2º deliver não muda `deliveredAt`/`proof`. ✅
+- **D — servidor aceitava prova não-URL:** `task:deliver` agora exige `^https?://` (espelha o cliente).
+  QA: deliver com proof="ok" → rejeitado (delivered fica false). ✅
+- **E — `board:archiveDone` arquivava card em escrow:** agora pula `delivered && !verified` (servidor + contador
+  do cliente). QA: card entregue-não-verificado não arquiva; depois de verificar, arquiva normal. ✅
+- **B — `task:verify` sem carimbo de quem verificou:** add `verifiedBy`/`verifiedAt` (schema+store+loader+persist).
+  NÃO bloqueio self-verify de propósito: o design (Parte B) permite o **dono da conta** assinar a própria entrega;
+  o controle anti-conluio é o registro de `verifiedBy` (pro F6 sinalizar "mesmo par se aprova >X%"), não um bloqueio.
+  QA: verify → `verifiedBy="pedro"`, `verifiedAt>0`. ✅
+- **G — `/login` sem rate-limit (PIN 4-8 díg brute-forçável):** add limiter em memória por membro (5 PINs errados →
+  30s de cooldown, 429). QA: 6ª tentativa do Pedro bloqueada; outro membro não afetado. ✅
+
+**Registrado como decisão/risco (NÃO corrigido agora):**
+- **F — login trust-on-first-use + `/members` público = tomada de identidade.** É o modelo de auth da Etapa 0b
+  (pré-branch, decisão do dono). Cenário: atacante lê `/members`, chama `/login` com o nome de um colega que ainda
+  não logou + PIN próprio → cria o PIN dele. **Mitigação parcial já feita:** o rate-limit (G) atrasa varredura do
+  roster. **Recomendação pro dono (olho humano):** decidir o modelo — ex.: provisionar PINs fora de banda, ou exigir
+  um segredo de convite no 1º acesso, ou aceitar o risco (time de 5, identidade de gamificação, baixo valor;
+  socialmente detectável). Não mexi sozinho no modelo de auth à noite — é chamada de produto do dono.
+- **Fail-open do `/config`** (F0): se `/config` falha no boot, o cliente assume tudo-ON; o servidor (autoritativo)
+  ainda faz no-op nos handlers desligados. Descasamento transitório de UX, não de dados. Aceitável.

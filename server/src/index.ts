@@ -7,7 +7,7 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 import { AccessToken } from "livekit-server-sdk";
 import { OfficeRoom } from "./rooms/OfficeRoom";
 import { loadBoard } from "./board/store";
-import { login } from "./progress/store";
+import { login, normId } from "./progress/store";
 import { getFlags } from "./gamification/flags";
 
 // Carrega server/.env (chaves do LiveKit), se existir. Node 20.12+/26.
@@ -64,10 +64,32 @@ app.get("/members", async (_req, res) => {
   }
 });
 
+// Rate-limit simples por membro: trava o brute-force de PIN (espaco pequeno, 4-8 digitos).
+// Em memoria (some no restart) — suficiente pro escopo: 5 PINs errados -> 30s de espera.
+const loginGate = new Map<string, { fails: number; until: number }>();
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_COOLDOWN_MS = 30_000;
+
 // Login por nome + PIN (1o acesso define o PIN; depois confere). Nunca expoe o hash.
 app.post("/login", (req, res) => {
   const body = (req.body ?? {}) as { member?: unknown; pin?: unknown };
-  res.json(login(String(body.member ?? ""), String(body.pin ?? "")));
+  const key = normId(String(body.member ?? ""));
+  const now = Date.now();
+  const rec = loginGate.get(key);
+  if (rec && rec.until > now) {
+    // em cooldown: responde como "wrong" (sem revelar a trava) e nao gasta scrypt
+    res.status(429).json({ ok: false, status: "wrong" });
+    return;
+  }
+  const result = login(String(body.member ?? ""), String(body.pin ?? ""));
+  if (result.ok) {
+    loginGate.delete(key); // sucesso zera o contador
+  } else if (result.status === "wrong") {
+    const fails = (rec?.fails ?? 0) + 1;
+    if (fails >= LOGIN_MAX_FAILS) loginGate.set(key, { fails: 0, until: now + LOGIN_COOLDOWN_MS });
+    else loginGate.set(key, { fails, until: 0 });
+  }
+  res.json(result);
 });
 
 // Cliente estatico (build do Vite). __dirname = server/dist -> ../../client/dist

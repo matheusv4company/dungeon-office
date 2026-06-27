@@ -25,6 +25,8 @@ export type TaskData = {
   proof?: string;
   deliverNote?: string;
   verified?: boolean;
+  verifiedBy?: string;
+  verifiedAt?: number;
 };
 
 export type ClientColor = { name: string; color: string };

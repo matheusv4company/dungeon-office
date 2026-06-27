@@ -62,6 +62,8 @@ export class OfficeRoom extends Room<OfficeState> {
       t.proof = String(d.proof ?? "");
       t.deliverNote = String(d.deliverNote ?? "");
       t.verified = !!d.verified;
+      t.verifiedBy = String(d.verifiedBy ?? "");
+      t.verifiedAt = Number(d.verifiedAt) || 0;
       this.state.tasks.set(t.id, t);
     }
     for (const c of board.clients) {
@@ -250,8 +252,9 @@ export class OfficeRoom extends Room<OfficeState> {
       if (!getFlags().gate) return; // feature desligada -> no-op
       const t = this.state.tasks.get(String(msg?.id ?? ""));
       if (!t || t.col !== "feito") return; // so entrega o que esta em "Feito"
+      if (t.delivered) return; // ja entregue: use "Devolver" antes de reentregar (nao recarimba/forja)
       const proof = String(msg?.proof ?? "").trim().slice(0, 300);
-      if (!proof) return; // prova obrigatoria (protege o colega: fica registrado que entregou)
+      if (!/^https?:\/\/\S+/i.test(proof)) return; // prova precisa ser link verificavel (espelha o cliente)
       const p = this.state.players.get(client.sessionId);
       t.delivered = true;
       t.deliveredAt = Date.now(); // carimbo autoritativo do servidor
@@ -262,12 +265,17 @@ export class OfficeRoom extends Room<OfficeState> {
       this.persistBoard();
     });
 
-    // Verificar (sign-off): libera o selo verde. F2 nao credita ponto (isso e F6).
-    this.onMessage("task:verify", (_c, msg: { id?: string }) => {
+    // Verificar (sign-off): libera o selo verde + carimba QUEM verificou (anti-forja simetrico;
+    // base pro F6 sinalizar conluio). F2 nao credita ponto (isso e F6). O design permite o dono da
+    // conta assinar a propria entrega, entao NAO bloqueio self-verify aqui — o carimbo fica de registro.
+    this.onMessage("task:verify", (client, msg: { id?: string }) => {
       if (!getFlags().gate) return;
       const t = this.state.tasks.get(String(msg?.id ?? ""));
       if (!t || !t.delivered) return; // so verifica o que foi entregue
+      const p = this.state.players.get(client.sessionId);
       t.verified = true;
+      t.verifiedBy = (p?.memberId || p?.name || "").slice(0, 60);
+      t.verifiedAt = Date.now();
       this.persistBoard();
     });
 
@@ -276,23 +284,21 @@ export class OfficeRoom extends Room<OfficeState> {
       if (!getFlags().gate) return;
       const t = this.state.tasks.get(String(msg?.id ?? ""));
       if (!t) return;
-      t.delivered = false;
-      t.verified = false;
-      t.proof = "";
-      t.deliverNote = "";
-      t.deliveredBy = "";
-      t.deliveredAt = 0;
+      this.resetDelivery(t);
       this.persistBoard();
     });
 
     // arquiva todos os cards em "Feito" (somem do board, mas ficam no historico)
     this.onMessage("board:archiveDone", () => {
+      const gateOn = getFlags().gate;
       let changed = false;
       this.state.tasks.forEach((t) => {
-        if (t.col === "feito" && !t.archived) {
-          t.archived = true;
-          changed = true;
-        }
+        if (t.col !== "feito" || t.archived) return;
+        // entrega em escrow (entregue mas ainda nao verificada) NAO arquiva: ficaria orfa
+        // (a UI do gate some no card arquivado), presa sem poder verificar nem devolver.
+        if (gateOn && t.delivered && !t.verified) return;
+        t.archived = true;
+        changed = true;
       });
       if (changed) this.persistBoard();
     });
@@ -378,8 +384,23 @@ export class OfficeRoom extends Room<OfficeState> {
    */
   private markColumn(t: Task, newCol: string) {
     if (newCol === t.col) return;
+    // Sair de "feito" pra trás = retrabalho: o ciclo recomeça, então zera o estado de entrega.
+    // Senão o card volta com o selo "Verificado" e a prova antiga sem reentrega (escrow furado).
+    if (t.col === "feito" && newCol !== "feito") this.resetDelivery(t);
     if (newCol === "fazendo") this.freezeCommittedDue(t);
     if (newCol === "feito" && t.completedAt === 0) t.completedAt = Date.now();
+  }
+
+  /** Zera todo o estado de entrega/escrow de um card (retrabalho ou "Devolver"). */
+  private resetDelivery(t: Task) {
+    t.delivered = false;
+    t.verified = false;
+    t.proof = "";
+    t.deliverNote = "";
+    t.deliveredBy = "";
+    t.deliveredAt = 0;
+    t.verifiedBy = "";
+    t.verifiedAt = 0;
   }
 
   /** Serializa o board atual (tarefas + cores de cliente/membro) e agenda a gravacao. */
@@ -407,6 +428,8 @@ export class OfficeRoom extends Room<OfficeState> {
         proof: t.proof,
         deliverNote: t.deliverNote,
         verified: t.verified,
+        verifiedBy: t.verifiedBy,
+        verifiedAt: t.verifiedAt,
       });
     });
     const clients: ClientColor[] = [];

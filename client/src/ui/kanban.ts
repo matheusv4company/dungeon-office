@@ -479,7 +479,10 @@ export class KanbanBoard {
       count.textContent = String(cards.length);
       head.append(pill, count);
       if (c.key === "feito") {
-        const doneActive = this.allTasks().filter((t) => t.col === "feito" && !t.archived).length;
+        // não conta (nem arquiva) entrega em escrow pendente — o servidor também a protege
+        const doneActive = this.allTasks().filter(
+          (t) => t.col === "feito" && !t.archived && !(getFlags().gate && t.delivered && !t.verified),
+        ).length;
         const arch = document.createElement("button");
         arch.className = "kb-arch";
         arch.textContent = `🗄 Arquivar (${doneActive})`;
