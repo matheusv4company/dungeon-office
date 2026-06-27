@@ -7,7 +7,7 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 import { AccessToken } from "livekit-server-sdk";
 import { OfficeRoom } from "./rooms/OfficeRoom";
 import { loadBoard } from "./board/store";
-import { login, normId } from "./progress/store";
+import { login, normId, listMemberNames } from "./progress/store";
 import { getFlags } from "./gamification/flags";
 
 // Carrega server/.env (chaves do LiveKit), se existir. Node 20.12+/26.
@@ -54,11 +54,20 @@ app.get("/token", async (req, res) => {
   res.json({ token: await at.toJwt(), url: LK_URL });
 });
 
-// Lista de membros (pro dropdown de login) — nomes do registro de membros do board.
+// Sugestões de membros pro autocomplete do login — nomes do board + de quem já logou (dedup).
 app.get("/members", async (_req, res) => {
   try {
     const board = await loadBoard();
-    res.json({ members: board.members.map((m) => m.name).filter(Boolean) });
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    for (const n of [...board.members.map((m) => m.name), ...listMemberNames()]) {
+      const k = (n || "").trim().toLowerCase();
+      if (k && !seen.has(k)) {
+        seen.add(k);
+        merged.push(n);
+      }
+    }
+    res.json({ members: merged });
   } catch {
     res.json({ members: [] });
   }

@@ -113,6 +113,13 @@ export function getMember(memberId: string): MemberProgress | undefined {
   return load().members[memberId];
 }
 
+/** Nomes de exibição de todos os membros já registrados (pro autocomplete do login). */
+export function listMemberNames(): string[] {
+  return Object.values(load().members)
+    .map((m) => m.displayName)
+    .filter(Boolean);
+}
+
 export type LoginResult =
   | { ok: true; status: "created" | "ok"; member: PublicProgress }
   | { ok: false; status: "invalid" | "wrong" };

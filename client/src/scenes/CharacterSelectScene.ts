@@ -212,30 +212,37 @@ export class CharacterSelectScene extends Phaser.Scene {
     this.panelDom?.updateSize();
   }
 
-  /** Modo LOGIN: dropdown de membro + PIN. */
+  /** Modo LOGIN: nome (campo de texto com sugestões dos já existentes) + PIN. Permite CRIAR no 1º acesso. */
   private renderLogin() {
     const div = this.panelEl;
     if (!div) return;
     div.dataset.mode = "login";
-    const opts =
-      this.members.length === 0
-        ? `<option value="">(carregando membros…)</option>`
-        : `<option value="">— escolha seu nome —</option>` +
-          this.members.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+    // datalist = sugestões de quem já existe; o campo é texto livre, então dá pra DIGITAR um nome novo
+    // (1º acesso) mesmo com a lista vazia — sem mais o beco-sem-saída do dropdown vazio.
+    const datalist = this.members.length
+      ? `<datalist id="ev-members-list">${this.members
+          .map((n) => `<option value="${escapeHtml(n)}"></option>`)
+          .join("")}</datalist>`
+      : "";
     div.innerHTML = `
       <div class="ev-hint">Quem é você?</div>
-      <select class="ev-member">${opts}</select>
+      <input class="ev-member" type="text" list="ev-members-list" maxlength="16"
+             autocomplete="off" placeholder="Digite seu nome" />
+      ${datalist}
       <input class="ev-pin" type="password" inputmode="numeric" autocomplete="off"
              maxlength="8" placeholder="PIN (4 a 8 dígitos)" />
       <button class="ev-go" type="button">Entrar</button>
       <div class="ev-msg"></div>
       <span class="ev-link ev-guest">ou entrar como convidado →</span>
-      <div class="ev-hint">1º acesso? Escolha seu nome e crie um PIN agora.</div>
+      <div class="ev-hint">1º acesso? Digite seu nome e crie um PIN. Da próxima, repita os dois pra entrar.</div>
     `;
-    const sel = div.querySelector<HTMLSelectElement>(".ev-member");
+    const member = div.querySelector<HTMLInputElement>(".ev-member");
     const pin = div.querySelector<HTMLInputElement>(".ev-pin");
     const go = div.querySelector<HTMLButtonElement>(".ev-go");
     go?.addEventListener("click", () => this.doLogin());
+    member?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") pin?.focus();
+    });
     pin?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") this.doLogin();
     });
@@ -245,7 +252,7 @@ export class CharacterSelectScene extends Phaser.Scene {
       pin.value = pin.value.replace(/\D/g, "").slice(0, 8);
     });
     this.panelDom?.updateSize();
-    window.setTimeout(() => (this.members.length ? sel?.focus() : pin?.focus()), 60);
+    window.setTimeout(() => member?.focus(), 60);
   }
 
   /** Modo CONVIDADO: nome livre, sem progresso. */
@@ -282,10 +289,10 @@ export class CharacterSelectScene extends Phaser.Scene {
     if (this.busy) return;
     const div = this.panelEl;
     if (!div) return;
-    const member = div.querySelector<HTMLSelectElement>(".ev-member")?.value ?? "";
+    const member = (div.querySelector<HTMLInputElement>(".ev-member")?.value ?? "").trim();
     const pin = div.querySelector<HTMLInputElement>(".ev-pin")?.value ?? "";
     if (!member) {
-      this.setMsg("Escolha seu nome na lista 🙂", "err");
+      this.setMsg("Digite seu nome 🙂", "err");
       return;
     }
     if (!/^\d{4,8}$/.test(pin)) {
