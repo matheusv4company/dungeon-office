@@ -24,4 +24,8 @@ export class Player extends Schema {
   @type("boolean") streamingBoard = false;
   /** identidade duravel de gamificacao (nome do membro normalizado); "" = convidado */
   @type("string") memberId = "";
+  // --- gamificacao F7: stats upside-only (derivados do nivel; baseline 100/20 sempre preservado) ---
+  @type("uint8") maxHp = 100; // 100..120 (HP maximo do combate; barra passa a hp/maxHp)
+  @type("uint8") dmg = 20; // 20..26 (dano da bola de fogo)
+  @type("uint8") level = 1; // nivel re-hidratado no join (espelho pro combate/cosmeticos)
 }

@@ -145,6 +145,7 @@ export class OfficeScene extends Phaser.Scene {
   private myHpBg?: Phaser.GameObjects.Rectangle;
   private myHpFill?: Phaser.GameObjects.Rectangle;
   private myHp = 100;
+  private myMaxHp = 100; // F7 — meu HP máximo (100..120 por nível); a barra usa hp/maxHp
   private myDmgAt = 0;
   private deathOverlay?: HTMLDivElement;
 
@@ -228,6 +229,7 @@ export class OfficeScene extends Phaser.Scene {
     this.gestorBtn = undefined;
     this.dead = false;
     this.myHp = 100;
+    this.myMaxHp = 100;
     this.myDmgAt = 0;
     this.myHpBg = undefined;
     this.myHpFill = undefined;
@@ -1581,6 +1583,7 @@ export class OfficeScene extends Phaser.Scene {
     x: number,
     y: number,
     hp: number,
+    maxHp: number,
     dmgAt: number,
     now: number,
     baseVis: boolean,
@@ -1589,9 +1592,12 @@ export class OfficeScene extends Phaser.Scene {
     bg.setVisible(show);
     fill.setVisible(show);
     if (!show) return;
+    // F7: barra agora e hp/maxHp (maxHp 100..120 por nivel). Cor pela PROPORCAO.
+    const max = maxHp > 0 ? maxHp : 100;
+    const ratio = Math.max(0, Math.min(1, hp / max));
     bg.setPosition(x, y);
-    fill.setPosition(x - 15, y).setScale(Math.max(0, hp) / 100, 1);
-    fill.setFillStyle(hp > 50 ? 0x3aff6a : hp > 20 ? 0xffcc3a : 0xff4a4a);
+    fill.setPosition(x - 15, y).setScale(ratio, 1);
+    fill.setFillStyle(ratio > 0.5 ? 0x3aff6a : ratio > 0.2 ? 0xffcc3a : 0xff4a4a);
   }
 
   private onDied() {
@@ -2521,6 +2527,7 @@ export class OfficeScene extends Phaser.Scene {
         this.player.x,
         this.player.y - 44,
         this.myHp,
+        this.myMaxHp,
         this.myDmgAt,
         this.time.now,
         true,
@@ -2553,6 +2560,7 @@ export class OfficeScene extends Phaser.Scene {
       if (meState && typeof meState.hp === "number") {
         if (meState.hp < this.myHp) this.myDmgAt = this.time.now;
         this.myHp = meState.hp;
+        if (typeof meState.maxHp === "number" && meState.maxHp > 0) this.myMaxHp = meState.maxHp;
       }
       this.remotes.forEach((r, sid) => {
         const p = state.players?.get(sid);
@@ -2578,7 +2586,8 @@ export class OfficeScene extends Phaser.Scene {
           if (p.hp < r.hp) r.dmgAt = this.time.now;
           r.hp = p.hp;
         }
-        this.updateHpBar(r.hpBg, r.hpFill, r.sprite.x, r.sprite.y - 44, r.hp, r.dmgAt, this.time.now, vis);
+        const rMax = typeof p.maxHp === "number" && p.maxHp > 0 ? p.maxHp : 100;
+        this.updateHpBar(r.hpBg, r.hpFill, r.sprite.x, r.sprite.y - 44, r.hp, rMax, r.dmgAt, this.time.now, vis);
       });
 
       // se alguem levantou/baixou a mao, atualiza o roster (sem refazer a cada frame)

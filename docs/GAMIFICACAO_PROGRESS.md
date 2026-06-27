@@ -425,3 +425,48 @@ todos CONFIRMED e **corrigidos**. **Commit:** (ver `git log` — "fix(gamificaca
   (Isso também habilita o FatorPrazo ×1.0 do design pra atraso por dependência externa.)
 
 Todos verificados (server-side determinístico + end-to-end no browser) e re-typecheck verde.
+
+---
+
+## F7 — Stats upside-only ✅ FEITO
+**Commit:** (ver `git log`) · **Flag:** `GAMIF_STATS` (default ON). **Desligar:** `GAMIF_STATS=0`.
+
+**O que entrou:**
+- `server/src/schema/Player.ts` — `maxHp` (uint8 100), `dmg` (uint8 20), `level` (uint8 1), sincronizados.
+- `server/src/rooms/OfficeRoom.ts`:
+  - `statsFor(level)` — `maxHp=100+min(lvl*2,20)` (100..120), `dmg=20+min(lvl,6)` (20..26). **Baseline 100/20**
+    quando `!getFlags().stats` (flag off) — sempre upside.
+  - `applyStatsTo(memberId,level)` — aplica ao vivo a TODAS as sessões do membro; **SÓ SOBE** (`Math.max`),
+    nunca rebaixa mid-sessão (clawback não pune o combate); level-up CURA (hp=maxHp). Guarda de flag própria.
+  - `onJoin` re-hidrata stats do nível persistido; **convidado = 100/20 puro**; entra com vida cheia.
+  - `hit` usa o **dmg do ATACANTE** (era fixo 20).
+  - `creditIfVerified` chama `applyStatsTo` no crédito (sobe stats no level-up).
+- `client/src/scenes/OfficeScene.ts` — barra de HP agora é **hp/maxHp** (cor pela proporção); `myMaxHp` lê
+  `meState.maxHp`; remotos usam `p.maxHp`.
+
+**Como desligar:** `GAMIF_STATS=0` → `statsFor` retorna baseline 100/20 (sem bônus), HP bar vira hp/100 efetivo
+(maxHp=100), dano fixo 20. Convidados já são baseline.
+
+**QA feito:**
+- Membro nível 1 → Player.maxHp=102, dmg=21, hp cheio (statsFor + onJoin). ✅
+- **Level-up ao vivo:** creditei Pedro a nível 2 → maxHp 104, dmg 22, hp curado pra 104 (applyStatsTo), HUD "Nível 2". ✅
+- **HP bar hp/maxHp:** testado o render — hp 52/maxHp 104 → barra 50% amarela; 104/104 → cheia verde. ✅
+- **Upside-only:** applyStatsTo usa Math.max (nunca abaixa); clawback NÃO chama applyStatsTo (combate não regride mid-sessão). ✅ (review confirmou)
+- **OFF** (`GAMIF_STATS=0` via .env + restart, /config = stats:false): coberto por composição — `statsFor` retorna
+  `{100,20}` literal quando off (sem lógica que possa falhar) + gate é o mesmo padrão provado; convidado=100/20
+  confirma o caminho baseline. (A verificação ao vivo do join-OFF ficou bloqueada pela instabilidade do Chrome
+  headless após N restarts — não é problema de código.)
+- Voz por proximidade INTOCADA (review confirmou: hit/HP/stats não tocam voz/áudio). uint8 não estoura (≤120/≤26).
+- Review (general-purpose): sólido, 0 crítico.
+
+**Riscos/decisões tomadas sozinho:**
+- **Nível 1 já dá +2 HP / +1 dmg** (statsFor(1)=102/21), seguindo a fórmula do design (min(level×2,20)). "Ninguém
+  abaixo de 100" é respeitado (102≥100). Convidado fica em 100/20 puro (sem progressão).
+- **Clawback não rebaixa o combate** ao vivo (só o XP/nível persistido cai). No PRÓXIMO join os stats recomputam do
+  nível (menor) — fresh session, não punição mid-sessão. Alinha com "HP de combate é volátil; trabalho é persistente".
+- **Combate balanceado:** 120 HP / 26 dmg ≈ 5 acertos (= baseline 100/20). Não trivializa.
+- **regen + escudo** (do design §2.3) ficaram de fora: precisam de `setSimulationInterval` (tick do servidor, que
+  não existe) + tracking de streak. O CORE (+maxHp/+dmg) entrega o "upside-only" visível. Refinamento futuro.
+
+**Ficou de fora:** regen/escudo (sim-interval + streak); demo de dano em combate real (precisa de 2 jogadores — o
+dono valida abrindo 2 abas e jogando bola de fogo; a lógica `hit` usa attacker.dmg, verificado por código).

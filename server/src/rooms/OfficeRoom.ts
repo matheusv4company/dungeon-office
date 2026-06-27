@@ -9,6 +9,7 @@ import {
   awardPE,
   clawbackPE,
   getProgressView,
+  getMember,
   currentWeekKey,
   normId,
   type ProgressView,
@@ -164,7 +165,10 @@ export class OfficeRoom extends Room<OfficeState> {
       if (!id || id === client.sessionId) return;
       const target = this.state.players.get(id);
       if (!target || target.hp <= 0) return;
-      target.hp = Math.max(0, target.hp - 20);
+      // F7: dano = poder do ATACANTE (20 baseline; 20..26 por nível com GAMIF_STATS on)
+      const attacker = this.state.players.get(client.sessionId);
+      const dmg = attacker?.dmg || 20;
+      target.hp = Math.max(0, target.hp - dmg);
       if (target.hp <= 0) {
         this.clients.find((c) => c.sessionId === id)?.send("died", {});
       }
@@ -494,18 +498,40 @@ export class OfficeRoom extends Room<OfficeState> {
     t.scoreAwarded = pe; // marca ANTES de persistir (anti-crédito-duplo)
     t.awardedTo = who; // quem recebeu (pra estornar a pessoa certa mesmo se reassignar)
     t.awardedWeek = currentWeekKey(); // semana do crédito (pra estornar na semana certa)
-    this.sendProgressTo(who, awardPE(who, t.assignee, pe));
+    const view = awardPE(who, t.assignee, pe);
+    this.sendProgressTo(who, view);
+    this.applyStatsTo(who, view.level); // F7: aplica bônus do novo nível ao vivo (level-up cura/sobe stats)
   }
 
   /** Manda o progresso atualizado pro cliente daquele membro, se online (HUD privado). */
   private sendProgressTo(memberId: string, view: ProgressView | undefined) {
-    if (!view) return;
+    if (!view || !memberId) return;
     for (const c of this.clients) {
       const p = this.state.players.get(c.sessionId);
-      if (p?.memberId && p.memberId === memberId) {
-        c.send("progress:self", view);
-        return;
-      }
+      if (p?.memberId === memberId) c.send("progress:self", view); // todas as sessões do membro
+    }
+  }
+
+  /** F7 — stats upside-only derivados do nível. Baseline 100/20 SEMPRE preservado (flag off = baseline). */
+  private statsFor(level: number): { maxHp: number; dmg: number } {
+    if (!getFlags().stats) return { maxHp: 100, dmg: 20 };
+    const lvl = Math.max(1, level || 1);
+    return { maxHp: 100 + Math.min(lvl * 2, 20), dmg: 20 + Math.min(lvl, 6) }; // teto 120/26
+  }
+
+  /** Aplica os stats do nível a um Player online. SÓ SOBE (nunca rebaixa mid-sessão — upside-only). */
+  private applyStatsTo(memberId: string, level: number) {
+    if (!memberId || !getFlags().stats) return; // guarda própria (defesa em profundidade)
+    const st = this.statsFor(level);
+    // aplica a TODAS as sessões do membro (ex.: 2 abas), não só a 1a
+    for (const c of this.clients) {
+      const p = this.state.players.get(c.sessionId);
+      if (p?.memberId !== memberId) continue;
+      const leveledUp = st.maxHp > p.maxHp;
+      p.level = level;
+      p.maxHp = Math.max(p.maxHp, st.maxHp); // nunca abaixa (clawback não pune o combate)
+      p.dmg = Math.max(p.dmg, st.dmg);
+      if (leveledUp) p.hp = p.maxHp; // level-up cura (recompensa, nunca punição)
     }
   }
 
@@ -626,6 +652,13 @@ export class OfficeRoom extends Room<OfficeState> {
     p.dir = 0;
     p.moving = false;
     p.memberId = String(options.memberId ?? "").slice(0, 40); // identidade de gamificacao
+    // F7: re-hidrata os stats do nível persistido. Convidado (sem memberId) = baseline 100/20 puro.
+    const lvl = p.memberId ? getMember(p.memberId)?.level ?? 1 : 1;
+    const st = p.memberId ? this.statsFor(lvl) : { maxHp: 100, dmg: 20 };
+    p.level = lvl;
+    p.maxHp = st.maxHp;
+    p.dmg = st.dmg;
+    p.hp = st.maxHp; // entra com vida cheia (até o teto do nível)
     this.state.players.set(client.sessionId, p);
     // F6: re-hidrata o progresso persistido e manda pro HUD do próprio jogador (privado).
     if (getFlags().progression && p.memberId) {
