@@ -32,7 +32,14 @@ app.use((_req, res, next) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, voice: voiceReady });
+  // `ai` diz se o processo enxerga a ANTHROPIC_API_KEY (booleano — nunca a chave em si)
+  // e se o flag da avaliacao esta ligado. Serve pra diagnosticar o "IA indisponivel".
+  res.json({
+    ok: true,
+    voice: voiceReady,
+    ai: !!process.env.ANTHROPIC_API_KEY,
+    aiReview: getFlags().aiReview,
+  });
 });
 
 // Feature flags da gamificacao — o cliente le isto no boot e so liga cada feature
