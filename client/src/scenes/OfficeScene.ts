@@ -606,7 +606,16 @@ export class OfficeScene extends Phaser.Scene {
     // teclado aqui: o update() já gerencia isso por frame (kbd.enabled + disableGlobalCapture),
     // e pré-setar keyboard.enabled desincronizaria aquele gatilho e travaria digitar espaço/WASD.
     this.kanban.onOpenChange = (open) => {
-      this.input.enabled = !open;
+      if (open) {
+        this.input.enabled = false;
+      } else {
+        // Religa DEPOIS que o gesto de fechar termina, não na hora: o "✕ Fechar" fica no MESMO
+        // canto do botão de voz; religar no meio do clique deixa o Phaser processar esse clique no
+        // botão de mute embaixo (te mutando ao fechar). O guard evita religar se reabriu no meio.
+        this.time.delayedCall(150, () => {
+          if (!this.kanban?.isOpen()) this.input.enabled = true;
+        });
+      }
     };
     this.input.enabled = true; // limpa estado preso caso um board anterior tenha sido destruído aberto
     if (wasOpen) this.kanban.open(false);
