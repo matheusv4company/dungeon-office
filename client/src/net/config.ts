@@ -33,6 +33,12 @@ const TODOS_ON: GamifFlags = {
 
 let flags: GamifFlags = { ...TODOS_ON };
 let carregado = false;
+let approver = ""; // memberId de quem aprova entregas "sem comprovação" (vazio = qualquer um)
+
+/** memberId (nome de login normalizado) do aprovador de entregas sem comprovação. */
+export function getApprover(): string {
+  return approver;
+}
 
 /**
  * Busca /config no servidor e guarda os flags. Chamar uma vez no boot (BootScene).
@@ -48,8 +54,9 @@ export async function loadConfig(): Promise<GamifFlags> {
       const r = await fetch(`${SERVER_HTTP_URL}/config`, { signal: ctrl.signal });
       clearTimeout(t);
       if (!r.ok) throw new Error(`status ${r.status}`);
-      const data = (await r.json()) as { flags?: Partial<GamifFlags> };
+      const data = (await r.json()) as { flags?: Partial<GamifFlags>; approver?: string };
       flags = { ...TODOS_ON, ...(data.flags ?? {}) };
+      approver = typeof data.approver === "string" ? data.approver : "";
       carregado = true;
       return flags;
     } catch {

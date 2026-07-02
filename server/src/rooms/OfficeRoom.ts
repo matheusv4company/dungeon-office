@@ -16,7 +16,7 @@ import {
   type ProgressView,
 } from "../progress/store";
 import { getFlags } from "../gamification/flags";
-import { reviewDelivery } from "../gamification/aiReview";
+import { reviewDelivery, type ProofImage } from "../gamification/aiReview";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; authToken?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -28,6 +28,8 @@ const MAP_W = 960;
 const MAP_H = 1824;
 const COLS = new Set(["backlog", "afazer", "fazendo", "travado", "feito"]);
 const UNITS = new Set(["", "ia", "mkt"]); // empresa dona da tarefa
+const FORMATS = new Set(["drive", "print", "none"]); // formato da entrega
+const IMG_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]); // print aceito pela visao
 const SIZES = new Set(["", "PP", "P", "M", "G", "GG"]); // F6 — tamanho (T-shirt)
 const WEIGHTS = new Set([70, 100, 150]); // F6 — peso do cliente (×0.7/1.0/1.5)
 // F6 — Pontos de Entrega: PE_base = Tamanho × PesoCliente; modulado pelo FatorPrazo.
@@ -74,6 +76,7 @@ export class OfficeRoom extends Room<OfficeState> {
       t.delivered = !!d.delivered;
       t.deliveredAt = Number(d.deliveredAt) || 0;
       t.deliveredBy = String(d.deliveredBy ?? "");
+      t.deliveryFormat = String(d.deliveryFormat ?? "");
       t.proof = String(d.proof ?? "");
       t.deliverNote = String(d.deliverNote ?? "");
       t.verified = !!d.verified;
@@ -295,27 +298,47 @@ export class OfficeRoom extends Room<OfficeState> {
 
     // Entregar ao cliente: exige prova (link). Carimba deliveredAt no SERVIDOR (anti-forja).
     // Fica "aguardando verificacao" — nenhum ponto e creditado aqui (escrow).
-    this.onMessage("task:deliver", (client, msg: { id?: string; proof?: string; note?: string }) => {
-      if (!getFlags().gate) return; // feature desligada -> no-op
-      const t = this.state.tasks.get(String(msg?.id ?? ""));
-      if (!t || t.col !== "feito") return; // so entrega o que esta em "Feito"
-      if (t.delivered) return; // ja entregue: use "Devolver" antes de reentregar (nao recarimba/forja)
-      const proof = String(msg?.proof ?? "").trim().slice(0, 300);
-      if (!/^https?:\/\/\S+/i.test(proof)) return; // prova precisa ser link verificavel (espelha o cliente)
-      const p = this.state.players.get(client.sessionId);
-      // Sem trava de identidade na entrega (time de confiança): qualquer um marca entregue, sem
-      // lockout silencioso pra convidado / nome de responsável que não bate com o login. O vazamento
-      // de progresso privado alheio já é barrado no onAuth (identidade vem do token, não do options).
-      t.delivered = true;
-      t.deliveredAt = Date.now(); // carimbo autoritativo do servidor
-      t.deliveredBy = (p?.memberId || p?.name || "").slice(0, 60);
-      t.proof = proof;
-      t.deliverNote = String(msg?.note ?? "").trim().slice(0, 280);
-      t.verified = false; // aguarda verificacao (IA em F3 ou sign-off manual)
-      this.persistBoard();
-      // F3: avaliacao da IA em segundo plano (nao bloqueia o board). So se o flag estiver on.
-      if (getFlags().aiReview) void this.runAiReview(t.id, client.sessionId);
-    });
+    this.onMessage(
+      "task:deliver",
+      (
+        client,
+        msg: { id?: string; proof?: string; note?: string; format?: string; image?: string; imageType?: string },
+      ) => {
+        if (!getFlags().gate) return; // feature desligada -> no-op
+        const t = this.state.tasks.get(String(msg?.id ?? ""));
+        if (!t || t.col !== "feito") return; // so entrega o que esta em "Feito"
+        if (t.delivered) return; // ja entregue: use "Devolver" antes de reentregar (nao recarimba/forja)
+        // 3 formatos: "drive" (link, IA confia) | "print" (imagem, IA VE) | "none" (sem comprovacao -> Matheus aprova)
+        const format = FORMATS.has(String(msg?.format)) ? String(msg.format) : "drive";
+        let proof = "";
+        let image: ProofImage | undefined;
+        if (format === "drive") {
+          proof = String(msg?.proof ?? "").trim().slice(0, 300);
+          if (!/^https?:\/\/\S+/i.test(proof)) return; // drive exige link verificavel
+        } else if (format === "print") {
+          const data = String(msg?.image ?? "");
+          const mt = String(msg?.imageType ?? "");
+          if (!data || !IMG_TYPES.has(mt)) return; // print exige imagem valida
+          if (data.length > 8_000_000) return; // ~6MB em base64 — guarda de tamanho
+          image = { data, mediaType: mt as ProofImage["mediaType"] };
+        }
+        // format === "none": sem prova nem imagem (vai pra aprovacao manual do Matheus)
+        const p = this.state.players.get(client.sessionId);
+        // Sem trava de identidade na entrega (time de confiança): qualquer um marca entregue.
+        t.delivered = true;
+        t.deliveredAt = Date.now(); // carimbo autoritativo do servidor
+        t.deliveredBy = (p?.memberId || p?.name || "").slice(0, 60);
+        t.deliveryFormat = format;
+        t.proof = proof;
+        t.deliverNote = String(msg?.note ?? "").trim().slice(0, 280);
+        t.verified = false; // aguarda verificacao (IA em drive/print, aprovacao do Matheus em none)
+        t.aiScore = -1;
+        t.aiNote = "";
+        this.persistBoard();
+        // IA so pra drive/print. "none" NAO chama IA — fica aguardando a aprovacao do aprovador.
+        if (format !== "none" && getFlags().aiReview) void this.runAiReview(t.id, client.sessionId, image);
+      },
+    );
 
     // Verificar (sign-off): libera o selo verde + carimba QUEM verificou (anti-forja simetrico;
     // base pro F6 sinalizar conluio). F2 nao credita ponto (isso e F6). O design permite o dono da
@@ -325,6 +348,12 @@ export class OfficeRoom extends Room<OfficeState> {
       const t = this.state.tasks.get(String(msg?.id ?? ""));
       if (!t || !t.delivered) return; // so verifica o que foi entregue
       const p = this.state.players.get(client.sessionId);
+      // Entrega "sem comprovacao" (none) SO pode ser aprovada pelo APROVADOR designado (Matheus),
+      // configurado via env GAMIF_APPROVER (nome de login normalizado). Sem approver -> qualquer um.
+      if (t.deliveryFormat === "none") {
+        const approver = normId(process.env.GAMIF_APPROVER || "");
+        if (approver && (p?.memberId || "") !== approver) return;
+      }
       t.verified = true;
       t.verifiedBy = (p?.memberId || p?.name || "").slice(0, 60);
       t.verifiedAt = Date.now();
@@ -571,17 +600,19 @@ export class OfficeRoom extends Room<OfficeState> {
    * nota; 4-6 e <4 NAO verificam e o feedback vai SEMPRE PRIVADO pro responsavel (vergonha
    * privada). Sem avaliacao -> deixa em escrow pro sign-off manual (degrada como o F2).
    */
-  private async runAiReview(taskId: string, sessionId: string) {
+  private async runAiReview(taskId: string, sessionId: string, image?: ProofImage) {
     const t0 = this.state.tasks.get(taskId);
     if (!t0) return;
     const deliveredAt0 = t0.deliveredAt; // token de identidade DESTA entrega (anti-race)
-    // snapshot pro prompt (a tarefa pode mudar enquanto a IA pensa)
+    // snapshot pro prompt (a tarefa pode mudar enquanto a IA pensa). A imagem (print) vem do
+    // deliver e NAO fica guardada no card — e transitoria, so pra a IA avaliar.
     const result = await reviewDelivery({
       title: t0.title,
       desc: t0.desc,
       client: t0.client,
       unit: t0.unit,
       proof: t0.proof,
+      image,
     });
     // re-busca: ignora resultado tardio se foi devolvida/movida/deletada/verificada OU
     // RE-ENTREGUE no meio (deliveredAt mudou) — senao a nota da entrega antiga aplicaria na nova.
@@ -649,6 +680,7 @@ export class OfficeRoom extends Room<OfficeState> {
         delivered: t.delivered,
         deliveredAt: t.deliveredAt,
         deliveredBy: t.deliveredBy,
+        deliveryFormat: t.deliveryFormat,
         proof: t.proof,
         deliverNote: t.deliverNote,
         verified: t.verified,

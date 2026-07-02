@@ -14,6 +14,7 @@ export type TaskData = {
   archived: boolean;
   unit: string; // "" | "ia" | "mkt"
   // gamificacao (opcionais p/ compat com board.json antigo)
+  deliveryFormat?: string;
   createdAt?: number;
   completedAt?: number;
   committedDue?: number;

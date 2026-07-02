@@ -45,7 +45,9 @@ app.get("/health", (_req, res) => {
 // Feature flags da gamificacao — o cliente le isto no boot e so liga cada feature
 // se o flag estiver on. O dono desliga qualquer coisa setando GAMIF_X=0 no Coolify.
 app.get("/config", (_req, res) => {
-  res.json({ flags: getFlags() });
+  // approver = memberId (nome de login normalizado) de quem aprova entregas "sem comprovacao".
+  // O cliente usa pra mostrar o botao "Aprovar" só pra ele; vazio = qualquer um aprova.
+  res.json({ flags: getFlags(), approver: normId(process.env.GAMIF_APPROVER || "") });
 });
 
 // Token do LiveKit (assinado com a Secret — nunca exposta ao cliente).

@@ -39,4 +39,7 @@ export class Task extends Schema {
   @type("string") awardedWeek = ""; // semana (YYYY-Www) do credito (pra estornar na semana CERTA)
   @type("string") size = ""; // "PP|P|M|G|GG" (tamanho; default M no calculo se vazio)
   @type("number") clientWeight = 100; // 70|100|150 (×0.7/1.0/1.5)
+  // formato da entrega: "" | "drive" (link, IA confia) | "print" (imagem, IA VE) | "none" (sem
+  // comprovacao -> aprovacao manual do Matheus). "" e tratado como "drive" (compat com entregas antigas)
+  @type("string") deliveryFormat = "";
 }

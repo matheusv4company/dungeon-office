@@ -7,12 +7,15 @@ const MODEL = "claude-haiku-4-5-20251001"; // modelo aprovado pelo dono
 
 export type AiReview = { score: number; note: string };
 
+export type ProofImage = { data: string; mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif" };
+
 export type DeliveryInput = {
   title: string;
   desc: string;
   client: string;
   unit: string; // "" | "ia" | "mkt"
   proof: string;
+  image?: ProofImage; // print anexado (base64) -> a IA avalia por VISAO (le a imagem de verdade)
   // OBS: a deliverNote (nota privada do responsavel) NAO entra aqui de proposito — a IA pode
   // parafrasea-la na justificativa publica (aiNote), vazando contexto interno. Privacidade > nota.
 };
@@ -36,27 +39,50 @@ export async function reviewDelivery(input: DeliveryInput): Promise<AiReview | n
   try {
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
     const client = new Anthropic({ apiKey });
-    const system =
-      "Voce avalia se uma entrega de uma agencia ao cliente esta PRONTA, contra uma Definition of Done, num time de CONFIANCA. " +
-      "IMPORTANTE: voce NAO consegue abrir o link de prova (Google Drive, Docs, Figma, Vercel, etc.), mas a PRESENCA de um " +
-      "link de prova valido E DO TIPO ADEQUADO a tarefa E a evidencia da entrega — o trabalho esta DENTRO do link. " +
-      "Assuma que os passos padrao da Definition of Done foram cumpridos, A MENOS QUE a descricao ou o tipo do link contradigam. " +
-      "NUNCA desconte pontos porque a descricao (um resumo curto) nao menciona explicitamente revisao/agendamento/testes/etc. — " +
-      "isso NAO e falha, e so um resumo enxuto. " +
-      "Escala: 7-10 e o caso COMUM e esperado — link valido e coerente com a tarefa (mesmo com descricao curta como 'segue no drive'); " +
-      "4-6 SOMENTE quando o link e de tipo claramente inadequado pra tarefa OU a descricao contradiz a tarefa; " +
-      "0-3 SOMENTE quando nao ha link de prova valido OU a entrega claramente nao tem relacao com a tarefa. " +
-      'Responda APENAS com um JSON valido: {"score": <inteiro 0 a 10>, "note": "<uma frase curta em PT-BR>"}.';
-    const user =
-      `Definition of Done: ${dodFor(input.unit)}\n\n` +
-      `Tarefa: ${clamp(input.title, 200)}\n` +
-      `Descricao (resumo, pode ser curto): ${clamp(input.desc, 1500) || "(sem descricao)"}\n` +
-      `Cliente: ${clamp(input.client, 80) || "(sem cliente)"}\n` +
-      `Link de prova (contem o trabalho entregue; voce nao abre, mas conte como entregue se for um link valido): ${clamp(input.proof, 300)}\n\n` +
-      `Assumindo que o link de prova contem o trabalho, de a nota 0-10 de quao pronta a entrega parece e uma justificativa curta.`;
+    const hasImage = !!input.image?.data;
+    const system = hasImage
+      ? // PRINT: a IA VE a imagem de verdade -> avalia se o conteudo bate com a tarefa (generoso)
+        "Voce avalia se o print (imagem) de uma entrega de uma agencia esta coerente com a tarefa, num time de CONFIANCA. " +
+        "A IMAGEM anexada E a propria entrega. De o BENEFICIO DA DUVIDA: se a imagem mostra um trabalho plausivelmente " +
+        "relacionado a tarefa (uma tela, design, documento, arte, post, grafico, planilha, etc.), considere ENTREGUE. " +
+        "NAO exija que a imagem prove cada passo (revisao, deploy, aviso ao cliente) nem que a arte seja perfeita — o print e " +
+        "so a evidencia visual do resultado. " +
+        "Escala: 7-10 e o caso COMUM e esperado — a imagem mostra um trabalho coerente com a tarefa; " +
+        "4-6 SOMENTE quando a imagem esta muito ambigua/ilegivel pra saber se corresponde; " +
+        "0-3 SOMENTE quando a imagem claramente NAO tem relacao com a tarefa (ex.: um meme, foto aleatoria) ou esta vazia/em branco. " +
+        'Responda APENAS com um JSON valido: {"score": <inteiro 0 a 10>, "note": "<uma frase curta em PT-BR>"}.'
+      : // DRIVE/LINK: a IA NAO abre o link -> confia na presenca do link + coerencia da descricao
+        "Voce avalia se uma entrega de uma agencia ao cliente esta PRONTA, contra uma Definition of Done, num time de CONFIANCA. " +
+        "IMPORTANTE: voce NAO consegue abrir o link de prova (Google Drive, Docs, Figma, Vercel, etc.), mas a PRESENCA de um " +
+        "link de prova valido E DO TIPO ADEQUADO a tarefa E a evidencia da entrega — o trabalho esta DENTRO do link. " +
+        "Assuma que os passos padrao da Definition of Done foram cumpridos, A MENOS QUE a descricao ou o tipo do link contradigam. " +
+        "NUNCA desconte pontos porque a descricao (um resumo curto) nao menciona explicitamente revisao/agendamento/testes/etc. — " +
+        "isso NAO e falha, e so um resumo enxuto. " +
+        "Escala: 7-10 e o caso COMUM e esperado — link valido e coerente com a tarefa (mesmo com descricao curta como 'segue no drive'); " +
+        "4-6 SOMENTE quando o link e de tipo claramente inadequado pra tarefa OU a descricao contradiz a tarefa; " +
+        "0-3 SOMENTE quando nao ha link de prova valido OU a entrega claramente nao tem relacao com a tarefa. " +
+        'Responda APENAS com um JSON valido: {"score": <inteiro 0 a 10>, "note": "<uma frase curta em PT-BR>"}.';
+    const userText = hasImage
+      ? // print: NAO joga a DoD dev na cara da IA — a imagem e a evidencia; foco e "bate com a tarefa?"
+        `Tarefa: ${clamp(input.title, 200)}\n` +
+        `Descricao (resumo, pode ser curto): ${clamp(input.desc, 1500) || "(sem descricao)"}\n` +
+        `Cliente: ${clamp(input.client, 80) || "(sem cliente)"}\n\n` +
+        `A imagem anexada e a entrega (print). De a nota 0-10 de quao coerente ela esta com a tarefa e uma justificativa curta.`
+      : `Definition of Done: ${dodFor(input.unit)}\n\n` +
+        `Tarefa: ${clamp(input.title, 200)}\n` +
+        `Descricao (resumo, pode ser curto): ${clamp(input.desc, 1500) || "(sem descricao)"}\n` +
+        `Cliente: ${clamp(input.client, 80) || "(sem cliente)"}\n` +
+        `Link de prova (contem o trabalho entregue; voce nao abre, mas conte como entregue se for um link valido): ${clamp(input.proof, 300)}\n\n` +
+        `Assumindo que o link de prova contem o trabalho, de a nota 0-10 de quao pronta a entrega parece e uma justificativa curta.`;
+    const content = hasImage
+      ? [
+          { type: "image" as const, source: { type: "base64" as const, media_type: input.image!.mediaType, data: input.image!.data } },
+          { type: "text" as const, text: userText },
+        ]
+      : userText;
     const resp = await client.messages.create(
-      { model: MODEL, max_tokens: 200, system, messages: [{ role: "user", content: user }] },
-      { timeout: 12000, maxRetries: 1 }, // 12s e 1 retry: nao pendura o board
+      { model: MODEL, max_tokens: 200, system, messages: [{ role: "user", content }] },
+      { timeout: hasImage ? 20000 : 12000, maxRetries: 1 }, // imagem demora mais; nao pendura o board
     );
     const text = resp.content
       .map((b) => (b.type === "text" ? b.text : ""))

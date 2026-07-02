@@ -1,5 +1,6 @@
 import { getStateCallbacks, type Room } from "../net/room";
-import { getFlags } from "../net/config";
+import { getFlags, getApprover } from "../net/config";
+import { loadMember } from "../auth/login";
 import { daysToDue } from "../util/overdue";
 
 /** Gestor de tarefas (kanban) — overlay HTML compartilhado, sincronizado via Colyseus. */
@@ -28,6 +29,7 @@ type TaskView = {
   // F2 — gate de entrega
   delivered: boolean;
   deliveredBy: string;
+  deliveryFormat: string; // "" | "drive" | "print" | "none"
   proof: string;
   deliverNote: string;
   verified: boolean;
@@ -467,7 +469,8 @@ export class KanbanBoard {
       out.push({
         id: t.id, title: t.title, desc: t.desc, assignee: t.assignee, client: t.client,
         due: t.due, col: t.col, order: t.order, archived: t.archived, unit: t.unit,
-        delivered: !!t.delivered, deliveredBy: t.deliveredBy ?? "", proof: t.proof ?? "",
+        delivered: !!t.delivered, deliveredBy: t.deliveredBy ?? "", deliveryFormat: t.deliveryFormat ?? "",
+        proof: t.proof ?? "",
         deliverNote: t.deliverNote ?? "", verified: !!t.verified,
         aiScore: typeof t.aiScore === "number" ? t.aiScore : -1, aiNote: t.aiNote ?? "",
         committedDue: typeof t.committedDue === "number" ? t.committedDue : 0, blockReason: t.blockReason ?? "",
@@ -710,6 +713,14 @@ export class KanbanBoard {
       b.onclick = onClick;
       return b;
     };
+    const fmtBadge = (fmt: string): HTMLSpanElement | null => {
+      const label =
+        fmt === "print" ? "🖼️ print" : fmt === "none" ? "✋ sem comprovação" : "🔗 drive";
+      const s = document.createElement("span");
+      s.style.cssText = "font-size:11px;color:#6b7280;";
+      s.textContent = label;
+      return s;
+    };
 
     if (t.verified) {
       const seal = document.createElement("span");
@@ -721,13 +732,25 @@ export class KanbanBoard {
       const l = proofLink();
       if (l) gate.appendChild(l);
     } else if (t.delivered) {
+      const isNone = t.deliveryFormat === "none";
       const seal = document.createElement("span");
       seal.className = "kb-seal wait";
-      seal.textContent = "⏳ aguardando verificação";
+      seal.textContent = isNone ? "⏳ aguardando aprovação do Matheus" : "⏳ aguardando verificação";
       gate.appendChild(seal);
-      const l = proofLink();
+      const badge = fmtBadge(t.deliveryFormat);
+      if (badge) gate.appendChild(badge);
+      const l = proofLink(); // só "drive" tem link
       if (l) gate.appendChild(l);
-      gate.appendChild(gbtn("✓ Verificar", "verify", () => this.room.send("task:verify", { id: t.id })));
+      if (isNone) {
+        // entrega sem comprovação: só o aprovador (Matheus) vê o botão; sem approver configurado, qualquer um
+        const ap = getApprover();
+        const me = loadMember()?.memberId ?? "";
+        if (!ap || me === ap) {
+          gate.appendChild(gbtn("✓ Aprovar", "verify", () => this.room.send("task:verify", { id: t.id })));
+        }
+      } else {
+        gate.appendChild(gbtn("✓ Verificar", "verify", () => this.room.send("task:verify", { id: t.id })));
+      }
       gate.appendChild(gbtn("↩ Devolver", "undo", () => this.room.send("task:undeliver", { id: t.id })));
       if (t.deliveredBy) {
         const by = document.createElement("span");
@@ -1084,52 +1107,184 @@ export class KanbanBoard {
 
   // ---------- F2: modal de entrega (link de prova + nota) ----------
 
+  /** Comprime uma imagem no navegador (max 1280px, JPEG) antes de mandar pra IA por visão. */
+  private compressImage(file: File): Promise<{ data: string; mediaType: string } | null> {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const max = 1280;
+          let w = img.width;
+          let h = img.height;
+          if (w > max || h > max) {
+            const s = max / Math.max(w, h);
+            w = Math.round(w * s);
+            h = Math.round(h * s);
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return resolve(null);
+          ctx.drawImage(img, 0, 0, w, h);
+          const data = (canvas.toDataURL("image/jpeg", 0.72).split(",")[1] || "");
+          resolve(data ? { data, mediaType: "image/jpeg" } : null);
+        };
+        img.onerror = () => resolve(null);
+        img.src = String(reader.result);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+  }
+
   private openDeliverModal(t: TaskView) {
     this.modalBg.innerHTML = "";
     const m = document.createElement("div");
     m.className = "kb-modal";
+    m.style.overflowY = "auto";
     m.onclick = (e) => e.stopPropagation();
     const h3 = document.createElement("h3");
     h3.textContent = "📤 Entregar ao cliente";
     m.appendChild(h3);
 
-    // enquadramento: proteção do colega, não auditoria (decisão do design)
+    let format: "drive" | "print" | "none" = "drive";
+    let imageData: { data: string; mediaType: string } | null = null;
+
+    // seletor de formato (3 caminhos combinados com o time)
+    const seg = document.createElement("div");
+    seg.className = "kb-seg";
+    seg.style.margin = "2px 0 10px";
+    const segBtns: Partial<Record<typeof format, HTMLButtonElement>> = {};
+    for (const [f, label] of [
+      ["drive", "🔗 Link do Drive"],
+      ["print", "🖼️ Print"],
+      ["none", "✋ Sem comprovação"],
+    ] as Array<[typeof format, string]>) {
+      const b = document.createElement("button");
+      b.className = "kb-seg-btn";
+      b.textContent = label;
+      b.onclick = () => {
+        format = f;
+        sync();
+      };
+      segBtns[f] = b;
+      seg.appendChild(b);
+    }
+    m.appendChild(seg);
+
     const hint = document.createElement("div");
     hint.className = "kb-deliver-hint";
-    hint.textContent =
-      "Fica registrado que você entregou — se o cliente reclamar, você está coberto. " +
-      "Cole o link da prova: post publicado, arquivo no Drive, ID de envio.";
     m.appendChild(hint);
 
-    const mk = (label: string, el: HTMLElement) => {
+    const fieldWrap = (label: string, el: HTMLElement) => {
       const f = document.createElement("div");
       f.className = "kb-field";
       const l = document.createElement("label");
       l.textContent = label;
       f.append(l, el);
-      m.appendChild(f);
+      return f;
     };
+
+    // campo DRIVE (link)
     const proof = document.createElement("input");
     proof.type = "url";
     proof.placeholder = "https://…";
     proof.value = t.proof || "";
-    mk("Link da prova de entrega", proof);
+    const driveField = fieldWrap("Link da prova de entrega", proof);
+
+    // campo PRINT (imagem)
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    const preview = document.createElement("img");
+    preview.style.cssText = "max-width:100%;max-height:180px;border-radius:8px;margin-top:6px;display:none;";
+    const imgStatus = document.createElement("div");
+    imgStatus.style.cssText = "font-size:12px;color:#6b7280;margin-top:4px;";
+    fileInput.onchange = async () => {
+      const file = fileInput.files?.[0];
+      if (!file) return;
+      imgStatus.textContent = "processando imagem…";
+      const r = await this.compressImage(file);
+      imageData = r;
+      if (!r) {
+        imgStatus.textContent = "não consegui ler essa imagem — tente outra.";
+        preview.style.display = "none";
+        return;
+      }
+      preview.src = `data:${r.mediaType};base64,${r.data}`;
+      preview.style.display = "block";
+      imgStatus.textContent = "imagem pronta ✔ — a IA vai ler o print";
+    };
+    const printField = document.createElement("div");
+    printField.className = "kb-field";
+    const pl = document.createElement("label");
+    pl.textContent = "Print da entrega (a IA lê a imagem)";
+    printField.append(pl, fileInput, preview, imgStatus);
+
+    // campo NONE (info)
+    const noneInfo = document.createElement("div");
+    noneInfo.style.cssText =
+      "font-size:13px;color:#7c2d12;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:9px 11px;";
+    noneInfo.textContent =
+      "Sem comprovação: a IA não avalia. A entrega fica aguardando a APROVAÇÃO DO MATHEUS pra creditar.";
+
+    m.append(driveField, printField, noneInfo);
+
     const note = document.createElement("textarea");
     note.placeholder = "Nota curta (opcional) — ex: enviei no grupo do cliente às 14h";
     note.value = t.deliverNote || "";
-    mk("Nota", note);
+    m.appendChild(fieldWrap("Nota", note));
+
     const err = document.createElement("div");
     err.className = "kb-err";
     m.appendChild(err);
 
-    const send = () => {
-      const link = proof.value.trim();
-      if (!/^https?:\/\/\S+/i.test(link)) {
-        err.textContent = "Cole um link válido (começa com http:// ou https://).";
-        proof.focus();
-        return;
+    const sync = () => {
+      for (const [f, b] of Object.entries(segBtns)) {
+        const active = f === format;
+        b!.style.background = active ? "#2563eb" : "#0f0e16";
+        b!.style.color = active ? "#fff" : "#cfc7b0";
       }
-      this.room.send("task:deliver", { id: t.id, proof: link, note: note.value.trim() });
+      driveField.style.display = format === "drive" ? "" : "none";
+      printField.style.display = format === "print" ? "" : "none";
+      noneInfo.style.display = format === "none" ? "" : "none";
+      hint.textContent =
+        format === "drive"
+          ? "Cole o link (Drive, post publicado, ID de envio). A IA confia no link + sua descrição."
+          : format === "print"
+            ? "Anexe um print do trabalho — a IA LÊ a imagem e dá a nota."
+            : "Sem comprovação — vai pra aprovação do Matheus.";
+      err.textContent = "";
+    };
+    sync();
+
+    const send = () => {
+      err.textContent = "";
+      if (format === "drive") {
+        const link = proof.value.trim();
+        if (!/^https?:\/\/\S+/i.test(link)) {
+          err.textContent = "Cole um link válido (começa com http:// ou https://).";
+          proof.focus();
+          return;
+        }
+        this.room.send("task:deliver", { id: t.id, format: "drive", proof: link, note: note.value.trim() });
+      } else if (format === "print") {
+        if (!imageData) {
+          err.textContent = "Anexe um print da entrega.";
+          return;
+        }
+        this.room.send("task:deliver", {
+          id: t.id,
+          format: "print",
+          image: imageData.data,
+          imageType: imageData.mediaType,
+          note: note.value.trim(),
+        });
+      } else {
+        this.room.send("task:deliver", { id: t.id, format: "none", note: note.value.trim() });
+      }
       this.closeModal();
     };
     proof.addEventListener("keydown", (e) => {
