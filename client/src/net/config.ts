@@ -34,21 +34,30 @@ const TODOS_ON: GamifFlags = {
 let flags: GamifFlags = { ...TODOS_ON };
 let carregado = false;
 
-/** Busca /config no servidor e guarda os flags. Chamar uma vez no boot (BootScene). */
+/**
+ * Busca /config no servidor e guarda os flags. Chamar uma vez no boot (BootScene).
+ * Tenta 3x com backoff curto: um blip no fetch não pode deixar o cliente divergir do
+ * servidor (renderizar controle de feature que o servidor tem OFF, virando botão "morto").
+ */
 export async function loadConfig(): Promise<GamifFlags> {
-  try {
-    // Timeout curto: nao pendurar o boot se o servidor estiver lento/fora.
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 4000);
-    const r = await fetch(`${SERVER_HTTP_URL}/config`, { signal: ctrl.signal });
-    clearTimeout(t);
-    const data = (await r.json()) as { flags?: Partial<GamifFlags> };
-    flags = { ...TODOS_ON, ...(data.flags ?? {}) };
-    carregado = true;
-  } catch {
-    // Servidor fora do ar no boot -> mantem default (tudo on).
-    flags = { ...TODOS_ON };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      // Timeout curto: nao pendurar o boot se o servidor estiver lento/fora.
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 4000);
+      const r = await fetch(`${SERVER_HTTP_URL}/config`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      const data = (await r.json()) as { flags?: Partial<GamifFlags> };
+      flags = { ...TODOS_ON, ...(data.flags ?? {}) };
+      carregado = true;
+      return flags;
+    } catch {
+      if (attempt < 2) await new Promise((res) => setTimeout(res, 500 * (attempt + 1)));
+    }
   }
+  // 3 tentativas falharam -> mantém default (tudo on); configLoaded() segue false pra quem quiser tratar.
+  flags = { ...TODOS_ON };
   return flags;
 }
 

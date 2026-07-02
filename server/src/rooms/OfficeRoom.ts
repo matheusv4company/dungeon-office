@@ -86,6 +86,9 @@ export class OfficeRoom extends Room<OfficeState> {
       t.scoreAwarded = Number(d.scoreAwarded) || 0;
       t.awardedTo = String(d.awardedTo ?? "");
       t.awardedWeek = String(d.awardedWeek ?? "");
+      // backfill p/ dados migrados (creditados antes de awardedTo existir): sem isso o estorno
+      // não sabe de quem tirar. Deriva do assignee (melhor palpite) quando há crédito sem destino.
+      if (t.scoreAwarded > 0 && !t.awardedTo) t.awardedTo = normId(t.assignee);
       t.size = SIZES.has(String(d.size)) ? String(d.size) : "";
       t.clientWeight = WEIGHTS.has(Number(d.clientWeight)) ? Number(d.clientWeight) : 100;
       this.state.tasks.set(t.id, t);
@@ -450,16 +453,22 @@ export class OfficeRoom extends Room<OfficeState> {
       t.blockedAt = 0;
       t.blockReason = ""; // destravou: limpa o motivo
     }
-    if (newCol === "fazendo") this.freezeCommittedDue(t);
+    // congela o prazo ao INICIAR ("fazendo") OU ao concluir direto ("feito") — arrastar
+    // afazer/backlog direto pra feito não passava por "fazendo" e fugia do -40% de atraso.
+    if (newCol === "fazendo" || newCol === "feito") this.freezeCommittedDue(t);
     if (newCol === "feito" && t.completedAt === 0) t.completedAt = Date.now();
   }
 
   /** Zera todo o estado de entrega/escrow de um card (retrabalho ou "Devolver"). */
   private resetDelivery(t: Task) {
-    // F6: se já creditou PE, estorna (escrow revogado) ANTES de limpar. Usa awardedTo/awardedWeek
-    // (quem REALMENTE recebeu e em qual semana) — não o assignee atual, que pode ter sido reassignado.
-    if (getFlags().progression && t.scoreAwarded > 0 && t.awardedTo) {
-      this.sendProgressTo(t.awardedTo, clawbackPE(t.awardedTo, t.scoreAwarded, t.awardedWeek));
+    // F6: se já creditou PE, estorna SEMPRE que houver crédito (escrow revogado) ANTES de limpar.
+    // NÃO gate no flag progression nem exige awardedTo: se o estorno é pulado mas os campos são
+    // zerados, o PE fica órfão no membro E o card volta elegível a novo crédito (dobro). Fallback
+    // pro assignee cobre dados migrados (creditados antes de awardedTo existir). clawbackPE é
+    // no-op quando não há registro daquele membro, então é seguro chamar incondicionalmente.
+    if (t.scoreAwarded > 0) {
+      const who = t.awardedTo || normId(t.assignee);
+      if (who) this.sendProgressTo(who, clawbackPE(who, t.scoreAwarded, t.awardedWeek));
     }
     t.scoreAwarded = 0;
     t.awardedTo = "";
@@ -482,7 +491,13 @@ export class OfficeRoom extends Room<OfficeState> {
     const peso = (t.clientWeight || 100) / 100; // 70→0.7, 100→1.0, 150→1.5
     // FatorPrazo: deliveredAt (servidor) vs prazo congelado ESTENDIDO pelo tempo em "Travado"
     // (bloqueio externo não conta como atraso — culpa não é da pessoa). Atrasou -> ×0.6 (ainda paga).
-    const prazo = t.committedDue > 0 ? t.committedDue + t.blockedMs : 0;
+    // Se nunca congelou committedDue (card antigo, entrou em "feito" antes do fix), cai pro due.
+    let committed = t.committedDue;
+    if (committed === 0 && t.due) {
+      const ms = Date.parse(t.due + "T23:59:59");
+      if (Number.isFinite(ms)) committed = ms;
+    }
+    const prazo = committed > 0 ? committed + t.blockedMs : 0;
     const atrasou = prazo > 0 && t.deliveredAt > 0 && t.deliveredAt > prazo;
     return Math.round(base * peso * (atrasou ? 0.6 : 1.0) * 10) / 10;
   }

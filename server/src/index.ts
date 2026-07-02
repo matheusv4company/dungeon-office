@@ -84,14 +84,21 @@ app.get("/members", async (_req, res) => {
 // (some no restart). Backoff PROGRESSIVO: a cada bloqueio o cooldown dobra (30s,1m,2m,...,1h) e
 // o contador de bloqueios NAO zera — entao tentar de novo so endurece a trava (forca bruta vira
 // inviavel). Limpa o Map quando ele cresce (spray de nomes).
-const loginGate = new Map<string, { fails: number; lockouts: number; until: number }>();
+const loginGate = new Map<string, { fails: number; lockouts: number; until: number; ts: number }>();
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_COOLDOWN_MS = 30_000;
 const LOGIN_COOLDOWN_MAX = 60 * 60_000; // teto de 1h por bloqueio
+const LOGIN_ENTRY_TTL = 60 * 60_000; // 1h sem atividade -> pode podar (reset natural do backoff)
 
 function pruneLoginGate(now: number) {
   if (loginGate.size < 500) return; // so poda quando cresce demais
-  for (const [k, v] of loginGate) if (v.until <= now && v.fails === 0) loginGate.delete(k);
+  // Poda por IDADE (ts), preservando quem esta em cooldown ATIVO. Assim: (a) entradas
+  // parcialmente falhas (fails 1..4) tambem saem quando ficam velhas (nao vazam memoria); e
+  // (b) o contador de bloqueios (lockouts) de quem esta sob ataque NAO zera — quem martela
+  // renova o ts a cada tentativa, entao nunca e podado e o backoff so endurece.
+  for (const [k, v] of loginGate) {
+    if (v.until <= now && now - v.ts > LOGIN_ENTRY_TTL) loginGate.delete(k);
+  }
 }
 
 // Login por nome + PIN (1o acesso define o PIN; depois confere). Nunca expoe o hash.
@@ -110,14 +117,14 @@ app.post("/login", (req, res) => {
   if (result.ok) {
     loginGate.delete(key); // sucesso zera tudo
   } else if (result.status === "wrong") {
-    const prev = rec ?? { fails: 0, lockouts: 0, until: 0 };
+    const prev = rec ?? { fails: 0, lockouts: 0, until: 0, ts: now };
     const fails = prev.fails + 1;
     if (fails >= LOGIN_MAX_FAILS) {
       const lockouts = prev.lockouts + 1;
       const cooldown = Math.min(LOGIN_COOLDOWN_MS * 2 ** (lockouts - 1), LOGIN_COOLDOWN_MAX);
-      loginGate.set(key, { fails: 0, lockouts, until: now + cooldown });
+      loginGate.set(key, { fails: 0, lockouts, until: now + cooldown, ts: now });
     } else {
-      loginGate.set(key, { fails, lockouts: prev.lockouts, until: 0 });
+      loginGate.set(key, { fails, lockouts: prev.lockouts, until: 0, ts: now });
     }
   }
   res.json(result);
