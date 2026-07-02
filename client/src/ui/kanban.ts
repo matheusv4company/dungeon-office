@@ -258,6 +258,9 @@ export class KanbanBoard {
     text: "", client: "", assignee: "", unit: "", lateOnly: false, showArchived: false,
   };
   onStreamChange?: (on: boolean) => void;
+  /** avisa o escritório quando o board abre/fecha, pra ele desligar o input do Phaser
+   *  (senão o clique no kanban vaza pro canvas embaixo e muta/chama sem querer). */
+  onOpenChange?: (open: boolean) => void;
 
   constructor(room: Room) {
     this.room = room;
@@ -407,6 +410,7 @@ export class KanbanBoard {
     else if (!this.opened) this.openedByStream = true;
     this.opened = true;
     this.overlay.classList.add("open");
+    this.onOpenChange?.(true);
     this.render();
   }
 
@@ -417,6 +421,7 @@ export class KanbanBoard {
     this.overlay.classList.remove("open");
     this.closeModal();
     if (this.streaming) this.toggleStream();
+    this.onOpenChange?.(false);
   }
 
   toggle() {
@@ -539,7 +544,16 @@ export class KanbanBoard {
 
     this.boardEl.innerHTML = "";
     for (const c of COLUMNS) {
-      const cards = all.filter((t) => t.col === c.key).sort((a, b) => a.order - b.order);
+      const cards = all
+        .filter((t) => t.col === c.key)
+        .sort((a, b) => {
+          // ordena por DATA DE ENTREGA (mais próxima primeiro); sem prazo vai pro fim;
+          // empate desfaz pela ordem manual do arrasto.
+          const da = a.due ? Date.parse(`${a.due}T00:00:00`) : Infinity;
+          const db = b.due ? Date.parse(`${b.due}T00:00:00`) : Infinity;
+          if (da !== db) return da - db;
+          return a.order - b.order;
+        });
       const col = document.createElement("div");
       col.className = "kb-col";
 
@@ -829,11 +843,69 @@ export class KanbanBoard {
     this.maybePromptBlock(id, col, oldCol);
   }
 
+  /**
+   * Pergunta de texto NÃO-BLOQUEANTE (substitui window.prompt). O prompt nativo congela a thread
+   * e pausa os timers — o heartbeat de posição de quem abriu para, e os outros cortam a voz/share
+   * dele pela trava de frescor. Este modal DOM mantém tudo rodando. Resolve com o texto ou null.
+   */
+  private askText(message: string, initial = ""): Promise<string | null> {
+    return new Promise((resolve) => {
+      const bg = document.createElement("div");
+      bg.className = "kb-modal-bg open"; // z-index 10052, acima do overlay do board
+      const m = document.createElement("div");
+      m.className = "kb-modal";
+      m.onclick = (e) => e.stopPropagation();
+      const msg = document.createElement("div");
+      msg.style.cssText = "white-space:pre-line;margin-bottom:12px;font:14px system-ui;color:#111;";
+      msg.textContent = message;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = initial;
+      input.style.cssText =
+        "width:100%;box-sizing:border-box;font:14px system-ui;padding:8px 9px;border:1.5px solid #d1d5db;border-radius:7px;outline:none;";
+      const actions = document.createElement("div");
+      actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:14px;";
+      const cancel = document.createElement("button");
+      cancel.className = "kb-btn";
+      cancel.textContent = "Cancelar";
+      cancel.style.background = "#6b7280";
+      const ok = document.createElement("button");
+      ok.className = "kb-btn";
+      ok.textContent = "OK";
+      ok.style.background = "#2563eb";
+      let settled = false;
+      const done = (val: string | null) => {
+        if (settled) return;
+        settled = true;
+        bg.remove();
+        resolve(val);
+      };
+      cancel.onclick = () => done(null);
+      ok.onclick = () => done(input.value);
+      input.onkeydown = (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          done(input.value);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          done(null);
+        }
+      };
+      bg.onclick = () => done(null); // clicar fora cancela
+      actions.append(cancel, ok);
+      m.append(msg, input, actions);
+      bg.appendChild(m);
+      document.body.appendChild(bg);
+      setTimeout(() => input.focus(), 0);
+    });
+  }
+
   /** F4 — ao ENTRAR em "Travado", pede um motivo curto (pausa o relógio de atraso). */
-  private maybePromptBlock(id: string, newCol: string, oldCol: string) {
+  private async maybePromptBlock(id: string, newCol: string, oldCol: string) {
     if (!getFlags().overdue) return;
     if (newCol !== "travado" || oldCol === "travado") return;
-    const reason = window.prompt(
+    const reason = await this.askText(
       "Travado — por quê? (motivo curto; ex.: aguardando cliente)\nIsso pausa o relógio de atraso.",
       "",
     );
@@ -863,10 +935,10 @@ export class KanbanBoard {
       sel.dataset.prev = val;
     };
     fill(current);
-    sel.onchange = () => {
+    sel.onchange = async () => {
       if (sel.value === "__add__") {
         const label = isClient ? "cliente" : "membro";
-        const name = window.prompt(`Nome do novo ${label}:`, "")?.trim();
+        const name = (await this.askText(`Nome do novo ${label}:`, ""))?.trim();
         if (name) {
           // registra so se for novo — nao sobrescreve a cor escolhida de um existente
           if (!this.knownValues(field).includes(name)) {
@@ -1093,8 +1165,8 @@ export class KanbanBoard {
     add.className = "kb-btn ghost";
     add.style.cssText = "margin-bottom:8px;background:#eef;color:#3730a3;";
     add.textContent = `➕ Adicionar ${noun}`;
-    add.onclick = () => {
-      const name = window.prompt(`Nome do novo ${noun}:`, "")?.trim();
+    add.onclick = async () => {
+      const name = (await this.askText(`Nome do novo ${noun}:`, ""))?.trim();
       if (name) {
         // so registra se for novo — nao sobrescreve a cor de um ja existente
         if (!this.knownValues(field).includes(name)) {
@@ -1119,8 +1191,8 @@ export class KanbanBoard {
       const ren = document.createElement("button");
       ren.className = "ren";
       ren.textContent = "renomear";
-      ren.onclick = () => {
-        const to = window.prompt(`Renomear ${noun} "${name}" para:`, name);
+      ren.onclick = async () => {
+        const to = await this.askText(`Renomear ${noun} "${name}" para:`, name);
         if (to && to.trim() && to.trim() !== name) {
           this.room.send(renameMsg, { from: name, to: to.trim() });
           this.openRegistry(kind);

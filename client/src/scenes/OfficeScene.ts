@@ -601,6 +601,13 @@ export class OfficeScene extends Phaser.Scene {
     this.kanban.onStreamChange = (on) => {
       this.room?.send("board:stream", { on });
     };
+    // Enquanto o board (overlay DOM) está aberto, desliga o PONTEIRO do Phaser — senão o clique
+    // no kanban vaza pro canvas embaixo e muta o mic / chama alguém sem querer. NÃO mexo no
+    // teclado aqui: o update() já gerencia isso por frame (kbd.enabled + disableGlobalCapture),
+    // e pré-setar keyboard.enabled desincronizaria aquele gatilho e travaria digitar espaço/WASD.
+    this.kanban.onOpenChange = (open) => {
+      this.input.enabled = !open;
+    };
     if (wasOpen) this.kanban.open(false);
   }
 
