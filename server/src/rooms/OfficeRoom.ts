@@ -12,12 +12,13 @@ import {
   getMember,
   currentWeekKey,
   normId,
+  verifyToken,
   type ProgressView,
 } from "../progress/store";
 import { getFlags } from "../gamification/flags";
 import { reviewDelivery } from "../gamification/aiReview";
 
-type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; memberId?: string };
+type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; authToken?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
 type CallMsg = { to?: string };
 
@@ -302,6 +303,9 @@ export class OfficeRoom extends Room<OfficeState> {
       const proof = String(msg?.proof ?? "").trim().slice(0, 300);
       if (!/^https?:\/\/\S+/i.test(proof)) return; // prova precisa ser link verificavel (espelha o cliente)
       const p = this.state.players.get(client.sessionId);
+      // segurança (#2): só o próprio RESPONSÁVEL entrega a tarefa dele — impede entregar (e depois
+      // creditar) no nome de outro membro. Gate na feature de login; card sem responsável não trava.
+      if (getFlags().login && normId(t.assignee) && (p?.memberId || "") !== normId(t.assignee)) return;
       t.delivered = true;
       t.deliveredAt = Date.now(); // carimbo autoritativo do servidor
       t.deliveredBy = (p?.memberId || p?.name || "").slice(0, 60);
@@ -670,6 +674,18 @@ export class OfficeRoom extends Room<OfficeState> {
     saveBoard({ tasks, clients, members });
   }
 
+  /**
+   * Identidade AUTENTICADA da sessão: vem do TOKEN emitido pelo /login (HMAC do memberId),
+   * NUNCA do options.memberId cru — senão qualquer cliente se passa por outro (lê o progresso
+   * privado, credita/estorna XP no nome alheio). Token ausente/inválido = convidado (memberId
+   * vazio), que entra normalmente. O retorno vira client.auth.
+   */
+  onAuth(_client: Client, options: JoinOptions) {
+    const token = String(options.authToken ?? "");
+    const memberId = token ? verifyToken(token) : null;
+    return { memberId: memberId ?? "" };
+  }
+
   onJoin(client: Client, options: JoinOptions = {}) {
     const p = new Player();
     p.name = String(options.name ?? "Convidado").slice(0, 16) || "Convidado";
@@ -678,7 +694,9 @@ export class OfficeRoom extends Room<OfficeState> {
     p.y = Number.isFinite(options.y) ? Number(options.y) : 592;
     p.dir = 0;
     p.moving = false;
-    p.memberId = String(options.memberId ?? "").slice(0, 40); // identidade de gamificacao
+    // identidade AUTENTICADA (do onAuth), não do options cru
+    const auth = client.auth as { memberId?: string } | undefined;
+    p.memberId = String(auth?.memberId ?? "").slice(0, 40);
     // F7: re-hidrata os stats do nível persistido. Convidado (sem memberId) = baseline 100/20 puro.
     const lvl = p.memberId ? getMember(p.memberId)?.level ?? 1 : 1;
     const st = p.memberId ? this.statsFor(lvl) : { maxHp: 100, dmg: 20 };

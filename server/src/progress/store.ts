@@ -1,6 +1,6 @@
 import { promises as fs, mkdirSync, writeFileSync, renameSync, readFileSync } from "fs";
 import * as path from "path";
-import { scryptSync, randomBytes, timingSafeEqual } from "crypto";
+import { scryptSync, randomBytes, timingSafeEqual, createHmac } from "crypto";
 
 /**
  * Progresso de gamificacao por MEMBRO (chave estavel = nome normalizado), persistido
@@ -22,7 +22,14 @@ export type MemberProgress = {
   schemaVersion: number;
 };
 
-type ProgressData = { members: Record<string, MemberProgress> };
+/** PE acumulado pra um membro que ainda NÃO logou (sem conta com PIN). Absorvido no 1º login. */
+type PendingPE = { xp: number; delivered: number; weeks: Record<string, number>; lastDeliveryAt: number };
+
+type ProgressData = {
+  members: Record<string, MemberProgress>;
+  pending?: Record<string, PendingPE>; // crédito à espera do 1º login do dono (anti-takeover #3)
+  secret?: string; // segredo p/ assinar tokens de sessão (estável entre restarts)
+};
 
 const DIR = process.env.BOARD_DIR || path.join(process.cwd(), "data");
 const FILE = path.join(DIR, "progress.json");
@@ -35,10 +42,11 @@ function load(): ProgressData {
   try {
     const raw = readFileSync(FILE, "utf8");
     const data = JSON.parse(raw) as Partial<ProgressData>;
-    cache = { members: data.members ?? {} };
+    cache = { members: data.members ?? {}, pending: data.pending ?? {}, secret: data.secret };
   } catch {
-    cache = { members: {} };
+    cache = { members: {}, pending: {} };
   }
+  if (!cache.pending) cache.pending = {};
   // migração defensiva: garante os campos do F6 em registros antigos (schemaVersion 1)
   for (const m of Object.values(cache.members)) {
     if (!m.weeks || typeof m.weeks !== "object") m.weeks = {};
@@ -47,6 +55,19 @@ function load(): ProgressData {
     if (typeof m.xp !== "number") m.xp = 0;
     if (typeof m.level !== "number") m.level = 1;
     m.schemaVersion = SCHEMA_VERSION; // marca como migrado
+  }
+  // anti-takeover (#3): contas PRÉ-CRIADAS sem PIN mas com progresso (creditadas antes do dono
+  // logar) viram "pending" — deixam de ser conta reivindicável por quem só digitar o nome. O PE
+  // espera o 1º login legítimo (com PIN) daquele nome pra ser absorvido.
+  for (const [id, m] of Object.entries(cache.members)) {
+    if (!m.pinHash && (m.xp > 0 || m.delivered > 0)) {
+      const pnd = (cache.pending[id] ??= { xp: 0, delivered: 0, weeks: {}, lastDeliveryAt: 0 });
+      pnd.xp = r1(pnd.xp + m.xp);
+      pnd.delivered += m.delivered;
+      for (const [wk, v] of Object.entries(m.weeks)) pnd.weeks[wk] = r1((pnd.weeks[wk] ?? 0) + v);
+      pnd.lastDeliveryAt = Math.max(pnd.lastDeliveryAt, m.lastDeliveryAt);
+      delete cache.members[id];
+    }
   }
   return cache;
 }
@@ -101,6 +122,52 @@ export function normId(name: string): string {
   return name.trim().toLowerCase();
 }
 
+// ---- token de sessão (HMAC do memberId com o segredo do servidor) ----
+// O /login emite o token só depois de conferir o PIN; o onAuth da sala valida. Assim a
+// identidade no join vem de quem PROVOU o PIN, não de um memberId cru autoatribuído pelo cliente.
+function serverSecret(): string {
+  const data = load();
+  if (!data.secret) {
+    data.secret = randomBytes(32).toString("hex");
+    scheduleSave();
+  }
+  return data.secret;
+}
+function sign(memberId: string): string {
+  return createHmac("sha256", serverSecret()).update(memberId).digest("hex").slice(0, 32);
+}
+export function issueToken(memberId: string): string {
+  return `${memberId}.${sign(memberId)}`;
+}
+/** Valida um token e devolve o memberId, ou null se inválido/forjado. */
+export function verifyToken(token: string): string | null {
+  const i = token.lastIndexOf("."); // o mac é hex (sem "."), então lastIndexOf separa mesmo com nome pontuado
+  if (i <= 0) return null;
+  const memberId = token.slice(0, i);
+  const mac = token.slice(i + 1);
+  const expected = sign(memberId);
+  try {
+    if (mac.length === expected.length && timingSafeEqual(Buffer.from(mac), Buffer.from(expected))) {
+      return memberId;
+    }
+  } catch {
+    /* comprimentos diferentes / buffer inválido */
+  }
+  return null;
+}
+
+/** Absorve o PE pendente (creditado antes do dono logar) para a conta recém-criada. */
+function absorbPending(data: ProgressData, m: MemberProgress) {
+  const pnd = data.pending?.[m.memberId];
+  if (!pnd) return;
+  m.xp = r1(m.xp + pnd.xp);
+  m.delivered += pnd.delivered;
+  for (const [wk, v] of Object.entries(pnd.weeks)) m.weeks[wk] = r1((m.weeks[wk] ?? 0) + v);
+  m.level = levelFromXp(m.xp);
+  if (pnd.lastDeliveryAt > m.lastDeliveryAt) m.lastDeliveryAt = pnd.lastDeliveryAt;
+  delete data.pending![m.memberId];
+}
+
 /** Progresso publico (sem o hash do PIN) pra mandar pro cliente. */
 export type PublicProgress = Omit<MemberProgress, "pinHash">;
 function publicView(m: MemberProgress): PublicProgress {
@@ -148,13 +215,15 @@ export function login(name: string, pin: string): LoginResult {
       schemaVersion: SCHEMA_VERSION,
     };
     data.members[memberId] = m;
+    absorbPending(data, m); // herda o PE que chegou antes dele logar (anti-takeover #3)
     scheduleSave();
     return { ok: true, status: "created", member: publicView(m) };
   }
-  // membro existe mas nunca setou PIN (ex.: veio so do board) -> define agora
+  // membro existe mas nunca setou PIN (ex.: registro sem progresso) -> define agora
   if (!m.pinHash) {
     m.pinHash = hashPin(pin);
     m.lastLoginAt = Date.now();
+    absorbPending(data, m); // herda PE pendente daquele nome, se houver
     scheduleSave();
     return { ok: true, status: "created", member: publicView(m) };
   }
@@ -190,29 +259,6 @@ function weekKey(ts: number): string {
 }
 
 const r1 = (n: number) => Math.round(n * 10) / 10; // arredonda 1 casa
-
-/** Cria um registro mínimo de progresso (pra creditar quem ainda não logou). */
-function ensureMember(memberId: string, displayName: string): MemberProgress {
-  const data = load();
-  let m = data.members[memberId];
-  if (!m) {
-    m = {
-      memberId,
-      displayName: displayName.trim().slice(0, 16) || memberId,
-      pinHash: "",
-      xp: 0,
-      level: 1,
-      weeks: {},
-      delivered: 0,
-      lastDeliveryAt: 0,
-      createdAt: Date.now(),
-      lastLoginAt: 0,
-      schemaVersion: SCHEMA_VERSION,
-    };
-    data.members[memberId] = m;
-  }
-  return m;
-}
 
 /** Visão do progresso pra HUD (própria pessoa). % é contra a PRÓPRIA média, nunca ranking. */
 export type ProgressView = {
@@ -259,22 +305,38 @@ export function getProgressView(memberId: string): ProgressView | undefined {
 }
 
 /**
- * Credita PE numa entrega Verificada. A IDEMPOTÊNCIA é de quem chama (Task.scoreAwarded);
- * aqui só somamos. Cria o registro se o membro ainda não logou (pra ele ver o XP ao entrar).
+ * Credita PE numa entrega Verificada. A IDEMPOTÊNCIA é de quem chama (Task.scoreAwarded).
+ * Membro REGISTRADO (com PIN) recebe direto; quem ainda NÃO logou tem o PE guardado em
+ * "pending" (absorvido no 1º login) — assim não existe conta pré-criada sem PIN pra alguém
+ * reivindicar só sabendo o nome (anti-takeover #3).
  */
 export function awardPE(memberId: string, displayName: string, pe: number): ProgressView {
-  const m = ensureMember(memberId, displayName);
-  if (displayName && (!m.displayName || m.displayName === m.memberId)) {
-    m.displayName = displayName.trim().slice(0, 16);
+  const data = load();
+  const m = data.members[memberId];
+  if (m && m.pinHash) {
+    if (displayName && (!m.displayName || m.displayName === m.memberId)) {
+      m.displayName = displayName.trim().slice(0, 16);
+    }
+    m.xp = Math.max(0, r1(m.xp + pe));
+    m.level = levelFromXp(m.xp);
+    const wk = weekKey(Date.now());
+    m.weeks[wk] = r1((m.weeks[wk] ?? 0) + pe);
+    m.delivered += 1;
+    m.lastDeliveryAt = Date.now();
+    scheduleSave();
+    return buildView(m);
   }
-  m.xp = Math.max(0, r1(m.xp + pe));
-  m.level = levelFromXp(m.xp);
+  // ainda não logou -> segura o PE em "pending" até o 1º login (com PIN) daquele nome
   const wk = weekKey(Date.now());
-  m.weeks[wk] = r1((m.weeks[wk] ?? 0) + pe);
-  m.delivered += 1;
-  m.lastDeliveryAt = Date.now();
+  const pending = (data.pending ??= {});
+  const pnd = (pending[memberId] ??= { xp: 0, delivered: 0, weeks: {}, lastDeliveryAt: 0 });
+  pnd.xp = r1(pnd.xp + pe);
+  pnd.delivered += 1;
+  pnd.weeks[wk] = r1((pnd.weeks[wk] ?? 0) + pe);
+  pnd.lastDeliveryAt = Date.now();
   scheduleSave();
-  return buildView(m);
+  const level = levelFromXp(pnd.xp);
+  return { xp: r1(pnd.xp), level, xpInLevel: 0, xpToNext: 0, weekPE: r1(pnd.weeks[wk]), baseline: 0, pct: 0, delivered: pnd.delivered };
 }
 
 /** Semana atual (pra carimbar no Task a semana do crédito e estornar nela depois). */
@@ -288,13 +350,24 @@ export function currentWeekKey(): string {
  * pra não inflar a semana antiga nem zerar a corrente quando o estorno cruza a virada de semana.
  */
 export function clawbackPE(memberId: string, pe: number, week?: string): ProgressView | undefined {
-  const m = load().members[memberId];
-  if (!m) return undefined;
-  m.xp = Math.max(0, r1(m.xp - pe));
-  m.level = levelFromXp(m.xp);
+  const data = load();
   const wk = week || weekKey(Date.now());
-  if (m.weeks[wk]) m.weeks[wk] = Math.max(0, r1(m.weeks[wk] - pe));
-  m.delivered = Math.max(0, m.delivered - 1);
-  scheduleSave();
-  return buildView(m);
+  const m = data.members[memberId];
+  if (m) {
+    m.xp = Math.max(0, r1(m.xp - pe));
+    m.level = levelFromXp(m.xp);
+    if (m.weeks[wk]) m.weeks[wk] = Math.max(0, r1(m.weeks[wk] - pe));
+    m.delivered = Math.max(0, m.delivered - 1);
+    scheduleSave();
+    return buildView(m);
+  }
+  // creditado enquanto pendente (dono ainda não logou) -> estorna do pending também
+  const pnd = data.pending?.[memberId];
+  if (pnd) {
+    pnd.xp = Math.max(0, r1(pnd.xp - pe));
+    if (pnd.weeks[wk]) pnd.weeks[wk] = Math.max(0, r1(pnd.weeks[wk] - pe));
+    pnd.delivered = Math.max(0, pnd.delivered - 1);
+    scheduleSave();
+  }
+  return undefined;
 }

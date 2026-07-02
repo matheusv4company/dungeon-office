@@ -7,7 +7,7 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 import { AccessToken } from "livekit-server-sdk";
 import { OfficeRoom } from "./rooms/OfficeRoom";
 import { loadBoard } from "./board/store";
-import { login, normId, listMemberNames } from "./progress/store";
+import { login, normId, listMemberNames, issueToken } from "./progress/store";
 import { getFlags } from "./gamification/flags";
 
 // Carrega server/.env (chaves do LiveKit), se existir. Node 20.12+/26.
@@ -116,6 +116,10 @@ app.post("/login", (req, res) => {
   const result = login(String(body.member ?? ""), String(body.pin ?? ""));
   if (result.ok) {
     loginGate.delete(key); // sucesso zera tudo
+    // emite o token de sessão (atado ao memberId) — o cliente guarda e manda no join;
+    // o onAuth da sala valida. É o que impede se passar por outro membro sem o PIN.
+    res.json({ ...result, token: issueToken(result.member.memberId) });
+    return;
   } else if (result.status === "wrong") {
     const prev = rec ?? { fails: 0, lockouts: 0, until: 0, ts: now };
     const fails = prev.fails + 1;

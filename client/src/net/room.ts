@@ -24,7 +24,7 @@ const SERVER_URL = resolveServerUrl();
 /** URL HTTP do servidor (mesma origem) — usada pra buscar o token do LiveKit. */
 export const SERVER_HTTP_URL = SERVER_URL.replace(/^ws/, "http");
 
-export type JoinOpts = { name: string; charId: number; x: number; y: number; memberId?: string };
+export type JoinOpts = { name: string; charId: number; x: number; y: number; authToken?: string };
 
 /** Conecta na sala "office" do Colyseus. */
 export async function joinOffice(opts: JoinOpts): Promise<Room> {

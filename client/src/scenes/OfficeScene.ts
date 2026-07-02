@@ -91,7 +91,7 @@ export class OfficeScene extends Phaser.Scene {
   private keys!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
   private obstacles: Phaser.GameObjects.GameObject[] = [];
   private charIndex = 0;
-  private memberId = ""; // identidade durável de gamificação (vazio = convidado)
+  private authToken = ""; // token de sessão do /login (vazio = convidado)
   private nameLabel!: Phaser.GameObjects.Text;
 
   // multiplayer
@@ -192,7 +192,7 @@ export class OfficeScene extends Phaser.Scene {
     this.myName = sel.name || "Convidado"; // F8 — nome-base pro cosmético
     this.myCosLevel = -1;
     // Identidade de gamificação só quando o login está ligado; senão entra como convidado.
-    this.memberId = getFlags().login ? (loadMember()?.memberId ?? "") : "";
+    this.authToken = getFlags().login ? (loadMember()?.token ?? "") : "";
     this.remotes.clear();
     this.room = undefined;
     this.obstacles = [];
@@ -469,7 +469,7 @@ export class OfficeScene extends Phaser.Scene {
     }, 700);
 
     try {
-      const room = await joinOffice({ name, charId: this.charIndex, x, y, memberId: this.memberId });
+      const room = await joinOffice({ name, charId: this.charIndex, x, y, authToken: this.authToken });
       this.setupVoiceButton();
       this.setupShareButton();
       this.setupGestorButton();
@@ -646,7 +646,7 @@ export class OfficeScene extends Phaser.Scene {
       this.reconnecting = false;
       if (this.leaving || this.room) return;
       try {
-        const room = await joinOffice({ name, charId: this.charIndex, x, y, memberId: this.memberId });
+        const room = await joinOffice({ name, charId: this.charIndex, x, y, authToken: this.authToken });
         if (this.leaving) {
           try {
             room.leave();

@@ -4,18 +4,29 @@
 // join do Colyseus. Convidado = sem memberId, sem progresso.
 import { SERVER_HTTP_URL } from "../net/room";
 
-const LS_MEMBER = "ev_member"; // JSON {memberId, displayName}
+const LS_MEMBER = "ev_member"; // JSON {memberId, displayName, token}
 
-export type SavedMember = { memberId: string; displayName: string };
+export type SavedMember = { memberId: string; displayName: string; token: string };
 
-/** Membro salvo neste device (relogin automatico), ou null. */
+/**
+ * Membro salvo neste device (relogin automatico), ou null. Exige o TOKEN de sessão: sem ele
+ * o join entra como convidado, então um cache antigo (sem token) força um novo login com PIN
+ * (uma vez) pra obter o token — necessário depois do endurecimento de identidade.
+ */
 export function loadMember(): SavedMember | null {
   try {
     const raw = localStorage.getItem(LS_MEMBER);
     if (!raw) return null;
     const m = JSON.parse(raw) as Partial<SavedMember>;
-    if (m && typeof m.memberId === "string" && m.memberId && typeof m.displayName === "string") {
-      return { memberId: m.memberId, displayName: m.displayName };
+    if (
+      m &&
+      typeof m.memberId === "string" &&
+      m.memberId &&
+      typeof m.displayName === "string" &&
+      typeof m.token === "string" &&
+      m.token
+    ) {
+      return { memberId: m.memberId, displayName: m.displayName, token: m.token };
     }
   } catch {
     /* sem localStorage / json invalido */
@@ -72,14 +83,16 @@ export async function login(member: string, pin: string): Promise<LoginResult> {
       ok?: boolean;
       status?: LoginStatus;
       member?: { memberId?: string; displayName?: string };
+      token?: string;
     };
-    if (data.ok && data.member?.memberId) {
+    if (data.ok && data.member?.memberId && data.token) {
       return {
         ok: true,
         status: data.status ?? "ok",
         member: {
           memberId: data.member.memberId,
           displayName: data.member.displayName ?? member.trim().slice(0, 16),
+          token: data.token,
         },
       };
     }
