@@ -892,12 +892,7 @@ export class OfficeScene extends Phaser.Scene {
     let mine = 0;
     tasks?.forEach((t: any) => {
       if (t.archived) return;
-      const d = daysToDue(
-        Number(t.committedDue) || 0,
-        String(t.due || ""),
-        String(t.col),
-        Number(t.blockedMs) || 0,
-      );
+      const d = daysToDue(String(t.due || ""), String(t.col), Number(t.blockedMs) || 0);
       if (d !== null && d < 0) {
         total++;
         if (myId && String(t.assignee || "").trim().toLowerCase() === myId) mine++;

@@ -303,9 +303,9 @@ export class OfficeRoom extends Room<OfficeState> {
       const proof = String(msg?.proof ?? "").trim().slice(0, 300);
       if (!/^https?:\/\/\S+/i.test(proof)) return; // prova precisa ser link verificavel (espelha o cliente)
       const p = this.state.players.get(client.sessionId);
-      // segurança (#2): só o próprio RESPONSÁVEL entrega a tarefa dele — impede entregar (e depois
-      // creditar) no nome de outro membro. Gate na feature de login; card sem responsável não trava.
-      if (getFlags().login && normId(t.assignee) && (p?.memberId || "") !== normId(t.assignee)) return;
+      // Sem trava de identidade na entrega (time de confiança): qualquer um marca entregue, sem
+      // lockout silencioso pra convidado / nome de responsável que não bate com o login. O vazamento
+      // de progresso privado alheio já é barrado no onAuth (identidade vem do token, não do options).
       t.delivered = true;
       t.deliveredAt = Date.now(); // carimbo autoritativo do servidor
       t.deliveredBy = (p?.memberId || p?.name || "").slice(0, 60);
@@ -493,15 +493,14 @@ export class OfficeRoom extends Room<OfficeState> {
   private computePE(t: Task): number {
     const base = SIZE_PE[t.size] ?? SIZE_PE.M; // default M se o tamanho não foi setado
     const peso = (t.clientWeight || 100) / 100; // 70→0.7, 100→1.0, 150→1.5
-    // FatorPrazo: deliveredAt (servidor) vs prazo congelado ESTENDIDO pelo tempo em "Travado"
-    // (bloqueio externo não conta como atraso — culpa não é da pessoa). Atrasou -> ×0.6 (ainda paga).
-    // Se nunca congelou committedDue (card antigo, entrou em "feito" antes do fix), cai pro due.
-    let committed = t.committedDue;
-    if (committed === 0 && t.due) {
+    // FatorPrazo: deliveredAt (servidor) vs a data de entrega ATUAL (`due`) + o tempo pausado em
+    // "Travado" (bloqueio externo não conta como atraso). Score e o chip do cliente usam a MESMA
+    // fonte (o due), então nunca divergem — se adiar a data, o -40% acompanha. Atrasou -> ×0.6.
+    let prazo = 0;
+    if (t.due) {
       const ms = Date.parse(t.due + "T23:59:59");
-      if (Number.isFinite(ms)) committed = ms;
+      if (Number.isFinite(ms)) prazo = ms + t.blockedMs;
     }
-    const prazo = committed > 0 ? committed + t.blockedMs : 0;
     const atrasou = prazo > 0 && t.deliveredAt > 0 && t.deliveredAt > prazo;
     return Math.round(base * peso * (atrasou ? 0.6 : 1.0) * 10) / 10;
   }

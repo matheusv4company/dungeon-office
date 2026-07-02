@@ -99,7 +99,7 @@ function daysOverdue(due: string, col: string): number {
 }
 /** Monta o chip de prazo escalonado (ou null se não há nada a mostrar). Tom de SOCORRO, nunca culpa. */
 function overdueChip(t: TaskView): HTMLSpanElement | null {
-  const d = daysToDue(t.committedDue, t.due, t.col, t.blockedMs);
+  const d = daysToDue(t.due, t.col, t.blockedMs);
   if (d === null) return null; // feito/travado/sem prazo
   let cls: string, text: string, tip: string;
   if (d < 0) {
@@ -534,7 +534,7 @@ export class KanbanBoard {
         // com F4 on, "só atrasados" usa o mesmo critério dos chips (e pausa em travado);
         // sem F4, mantém o cálculo antigo.
         const isLate = getFlags().overdue
-          ? (daysToDue(t.committedDue, t.due, t.col, t.blockedMs) ?? 0) < 0
+          ? (daysToDue(t.due, t.col, t.blockedMs) ?? 0) < 0
           : daysOverdue(t.due, t.col) > 0;
         if (!isLate) return false;
       }
