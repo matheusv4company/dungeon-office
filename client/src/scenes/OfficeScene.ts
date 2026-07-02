@@ -59,6 +59,17 @@ function floorOfY(y: number): number {
   return 2;
 }
 
+// PRNG determinístico (mulberry32) — rachaduras do terremoto iguais a cada load (mapa estável)
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 type Rect = { c: number; r: number; w: number; h: number };
 type Decor = [col: number, row: number, key: string];
 type Remote = {
@@ -310,15 +321,26 @@ export class OfficeScene extends Phaser.Scene {
     this.buildFloorInto(0, () => {
       this.add.tileSprite(0, 0, W, OY * T, "sand1").setOrigin(0).setDepth(0);
       this.buildBeach();
+      // 🌋 terremoto: rachaduras na areia (tons de areia molhada)
+      this.drawCracks(10, OY * T - 10, { crack: 0x6b5836, edge: 0xe9d9a8, rubble: 0x5a4a2e });
     });
     this.buildFloorInto(1, () => {
       this.add.tileSprite(0, OY * T, W, OFFICE_ROWS * T, "floor").setOrigin(0).setDepth(0);
       this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
       this.buildOfficeDecor(OY);
+      // 🌋 rachaduras no piso do escritório (fendas escuras)
+      this.drawCracks(OY * T + 10, CRYPT_Y0 * T - 10, { crack: 0x2b2b33, edge: 0x8a8a95, rubble: 0x3a3a42 });
     });
     this.buildFloorInto(2, () => {
       this.add.tileSprite(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T, "crypt0").setOrigin(0).setDepth(0);
       this.buildCrypt();
+      // 🌋 rachaduras na cripta (fenda quase preta com brilho ciano vazando — combina c/ o Núcleo)
+      this.drawCracks(CRYPT_Y0 * T + 10, ROWS * T - 10, {
+        crack: 0x07070d,
+        edge: 0x3a3550,
+        glow: 0x6ee7ff,
+        rubble: 0x14121c,
+      });
     });
 
     // ---- player ----
@@ -2599,6 +2621,98 @@ export class OfficeScene extends Phaser.Scene {
     const before = this.children.list.length;
     fn();
     for (const o of this.children.list.slice(before)) this.floorObjs[f].push(o);
+  }
+
+  /** Gera uma fissura jagged (lista de pontos) caminhando com jitter, presa à faixa do andar. */
+  private crackPath(
+    rnd: () => number,
+    x0: number,
+    y0: number,
+    angle: number,
+    steps: number,
+    stepLen: number,
+    yTop: number,
+    yBot: number,
+  ): Array<{ x: number; y: number }> {
+    const pts = [{ x: x0, y: y0 }];
+    let x = x0;
+    let y = y0;
+    let a = angle;
+    for (let i = 0; i < steps; i++) {
+      a += (rnd() - 0.5) * 0.9; // vira um pouco a cada passo (zig-zag do terremoto)
+      x += Math.cos(a) * stepLen * (0.6 + rnd() * 0.8);
+      y += Math.sin(a) * stepLen * (0.6 + rnd() * 0.8);
+      x = Math.max(4, Math.min(W - 4, x));
+      y = Math.max(yTop, Math.min(yBot, y));
+      pts.push({ x, y });
+    }
+    return pts;
+  }
+
+  private strokePath(
+    g: Phaser.GameObjects.Graphics,
+    pts: Array<{ x: number; y: number }>,
+    width: number,
+    color: number,
+    alpha: number,
+    dy = 0,
+  ) {
+    g.lineStyle(width, color, alpha);
+    g.beginPath();
+    g.moveTo(pts[0].x, pts[0].y + dy);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y + dy);
+    g.strokePath();
+  }
+
+  /**
+   * Rachaduras de terremoto no chão de um andar (fissuras principais + galhos + entulho).
+   * Chamado DENTRO do buildFloorInto -> fica na camada do andar (some com o andar vizinho) e
+   * em depth baixo (acima do piso, abaixo de decoração/avatares).
+   */
+  private drawCracks(
+    yTop: number,
+    yBot: number,
+    c: { crack: number; edge: number; glow?: number; rubble: number },
+  ) {
+    const g = this.add.graphics().setDepth(0.3);
+    const rnd = mulberry32((yTop | 0) * 2654435761 + 101);
+    const paths: Array<Array<{ x: number; y: number }>> = [];
+    const mains = 4;
+    for (let i = 0; i < mains; i++) {
+      const fromLeft = rnd() < 0.5;
+      const x0 = fromLeft ? rnd() * W * 0.3 : W - rnd() * W * 0.3;
+      const y0 = yTop + rnd() * (yBot - yTop);
+      const angle = (fromLeft ? 0 : Math.PI) + (rnd() - 0.5) * 1.4;
+      const steps = 8 + Math.floor(rnd() * 7);
+      const p = this.crackPath(rnd, x0, y0, angle, steps, 34, yTop, yBot);
+      paths.push(p);
+      if (rnd() < 0.75 && p.length > 4) {
+        // galho saindo de um ponto do meio
+        const bi = 2 + Math.floor(rnd() * (p.length - 3));
+        const ba =
+          Math.atan2(p[bi].y - p[bi - 1].y, p[bi].x - p[bi - 1].x) +
+          (rnd() < 0.5 ? 1 : -1) * (0.6 + rnd() * 0.6);
+        paths.push(this.crackPath(rnd, p[bi].x, p[bi].y, ba, 3 + Math.floor(rnd() * 4), 26, yTop, yBot));
+      }
+    }
+    // brilho sob a fissura (só cripta) — energia vazando do terremoto
+    if (c.glow !== undefined) for (const p of paths) this.strokePath(g, p, 7, c.glow, 0.16);
+    // largura/sombra da fissura
+    for (const p of paths) this.strokePath(g, p, 4, c.crack, 0.9);
+    // núcleo escuro (a fenda de fato)
+    for (const p of paths) this.strokePath(g, p, 1.6, 0x000000, 0.85);
+    // realce de borda (deslocado 1.4px pra cima) dá volume/relevo
+    for (const p of paths) this.strokePath(g, p, 1, c.edge, 0.5, -1.4);
+    // entulho perto das fissuras
+    for (const p of paths) {
+      for (let k = 0; k < 3; k++) {
+        const pt = p[1 + Math.floor(rnd() * (p.length - 1))];
+        this.add
+          .rectangle(pt.x + (rnd() - 0.5) * 16, pt.y + (rnd() - 0.5) * 12, 3 + rnd() * 3, 2 + rnd() * 2, c.rubble, 0.85)
+          .setDepth(0.31)
+          .setAngle(rnd() * 90);
+      }
+    }
   }
 
   /** Copia visual de uma divisoria pra ela aparecer tambem do andar vizinho. */
