@@ -261,6 +261,8 @@ export class KanbanBoard {
   /** avisa o escritório quando o board abre/fecha, pra ele desligar o input do Phaser
    *  (senão o clique no kanban vaza pro canvas embaixo e muta/chama sem querer). */
   onOpenChange?: (open: boolean) => void;
+  /** canceladores dos askText abertos — pra não deixar overlay órfão se o board fechar/reconectar */
+  private readonly openPrompts = new Set<() => void>();
 
   constructor(room: Room) {
     this.room = room;
@@ -420,8 +422,15 @@ export class KanbanBoard {
     this.openedByStream = false;
     this.overlay.classList.remove("open");
     this.closeModal();
+    this.dismissPrompts();
     if (this.streaming) this.toggleStream();
     this.onOpenChange?.(false);
+  }
+
+  /** Fecha qualquer askText aberto — evita overlay órfão (z-index alto) travando a tela quando
+   *  o board fecha/é destruído no reconnect com um prompt em aberto. */
+  private dismissPrompts() {
+    for (const d of [...this.openPrompts]) d();
   }
 
   toggle() {
@@ -544,16 +553,17 @@ export class KanbanBoard {
 
     this.boardEl.innerHTML = "";
     for (const c of COLUMNS) {
+      // ordena por DATA DE ENTREGA (mais próxima primeiro); sem prazo / data inválida vai pro fim;
+      // empate desfaz pela ordem manual do arrasto. Decorate-sort: parseia a data UMA vez por card
+      // (não a cada comparação) e trata NaN como Infinity (comparador NaN embaralharia a coluna).
       const cards = all
         .filter((t) => t.col === c.key)
-        .sort((a, b) => {
-          // ordena por DATA DE ENTREGA (mais próxima primeiro); sem prazo vai pro fim;
-          // empate desfaz pela ordem manual do arrasto.
-          const da = a.due ? Date.parse(`${a.due}T00:00:00`) : Infinity;
-          const db = b.due ? Date.parse(`${b.due}T00:00:00`) : Infinity;
-          if (da !== db) return da - db;
-          return a.order - b.order;
-        });
+        .map((t) => {
+          const ms = t.due ? Date.parse(`${t.due}T00:00:00`) : NaN;
+          return { t, k: Number.isFinite(ms) ? ms : Infinity };
+        })
+        .sort((a, b) => a.k - b.k || a.t.order - b.t.order)
+        .map((x) => x.t);
       const col = document.createElement("div");
       col.className = "kb-col";
 
@@ -627,7 +637,7 @@ export class KanbanBoard {
       meta.appendChild(dt);
     }
     if (getFlags().overdue) {
-      // F4: chip escalonado com TOM DE SOCORRO (usa committedDue; pausa em travado/feito)
+      // F4: chip escalonado com TOM DE SOCORRO (usa o due atual; pausa em travado/feito)
       const chip = overdueChip(t);
       if (chip) meta.appendChild(chip);
       // motivo do "Travado" (relógio pausado) — neutro, sobre o trabalho
@@ -877,9 +887,12 @@ export class KanbanBoard {
       const done = (val: string | null) => {
         if (settled) return;
         settled = true;
+        this.openPrompts.delete(dismiss);
         bg.remove();
         resolve(val);
       };
+      const dismiss = () => done(null);
+      this.openPrompts.add(dismiss); // registrado pra ser fechado se o board sumir no meio
       cancel.onclick = () => done(null);
       ok.onclick = () => done(input.value);
       input.onkeydown = (e) => {
@@ -1230,6 +1243,7 @@ export class KanbanBoard {
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
     window.removeEventListener("pointercancel", this.onPointerUp);
+    this.dismissPrompts(); // não deixa askText pendurado ao ser destruído no reconnect
     this.overlay.remove();
     this.modalBg.remove();
   }

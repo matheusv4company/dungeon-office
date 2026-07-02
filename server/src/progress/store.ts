@@ -129,7 +129,7 @@ function serverSecret(): string {
   const data = load();
   if (!data.secret) {
     data.secret = randomBytes(32).toString("hex");
-    scheduleSave();
+    writeNow(); // grava JÁ (não debounced): se cair antes do flush, todos os tokens virariam inválidos
   }
   return data.secret;
 }

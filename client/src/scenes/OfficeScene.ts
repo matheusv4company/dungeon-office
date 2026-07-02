@@ -608,6 +608,7 @@ export class OfficeScene extends Phaser.Scene {
     this.kanban.onOpenChange = (open) => {
       this.input.enabled = !open;
     };
+    this.input.enabled = true; // limpa estado preso caso um board anterior tenha sido destruído aberto
     if (wasOpen) this.kanban.open(false);
   }
 
