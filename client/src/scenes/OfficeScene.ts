@@ -43,7 +43,12 @@ const VOICE_STALE_MS = 1500; // sem update de posicao ha mais que isso: nao conf
 // A posicao rastreada e o CENTRO do sprite, que fica ~0.6 tile ACIMA dos pes; por
 // isso a zona sobe ate a parede de cima (OY) e encosta nas laterais — assim quem
 // fica colado em qualquer parede continua dentro da bolha, e nada vaza pro lado de fora.
-const MEETING_ZONES = [{ x1: 0, y1: OY * T, x2: 9 * T, y2: (OY + 7) * T }];
+// Zonas de reunião (bolhas de áudio isoladas) — alinhadas aos 3 TAPETES do escritório pintado.
+const MEETING_ZONES = [
+  { x1: 5 * T, y1: (OY + 13) * T, x2: 10 * T, y2: (OY + 18) * T }, // tapete azul (baixo-esq)
+  { x1: 19 * T, y1: (OY + 6) * T, x2: 25 * T, y2: (OY + 12) * T }, // tapete vermelho (cima-dir)
+  { x1: 19 * T, y1: (OY + 13) * T, x2: 25 * T, y2: (OY + 19) * T }, // tapete dourado (baixo-dir)
+];
 function zoneAt(x: number, y: number): number {
   for (let i = 0; i < MEETING_ZONES.length; i++) {
     const z = MEETING_ZONES[i];
@@ -328,6 +333,7 @@ export class OfficeScene extends Phaser.Scene {
     this.buildFloorInto(0, () => {
       if (this.paintedMap) {
         this.add.image(0, 0, "painted_beach").setOrigin(0, 0).setDepth(0);
+        this.addStaircase(16, 14, false, "▼ Escritório", 16, 20); // escada continua funcionando
       } else {
         this.add.tileSprite(0, 0, W, OY * T, "sand1").setOrigin(0).setDepth(0);
         this.buildBeach();
@@ -337,6 +343,12 @@ export class OfficeScene extends Phaser.Scene {
     this.buildFloorInto(1, () => {
       if (this.paintedMap) {
         this.add.image(0, OY * T, "painted_office").setOrigin(0, 0).setDepth(0);
+        this.addStaircase(16, OY + 2, true, "▲ Praia", 16, 13); // sobe pra praia
+        this.addStaircase(16, OY + 17, false, "▼ Cripta", 16, 42); // desce pra cripta
+        // rótulos nos 3 tapetes = 3 salas de reunião (bolhas de áudio isoladas)
+        this.addRoomLabel("🗣️ Reunião", 7.5 * T, (OY + 15.5) * T);
+        this.addRoomLabel("🗣️ Reunião", 22 * T, (OY + 9) * T);
+        this.addRoomLabel("🗣️ Reunião", 22 * T, (OY + 16) * T);
       } else {
         this.add.tileSprite(0, OY * T, W, OFFICE_ROWS * T, "floor").setOrigin(0).setDepth(0);
         this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
@@ -347,6 +359,7 @@ export class OfficeScene extends Phaser.Scene {
     this.buildFloorInto(2, () => {
       if (this.paintedMap) {
         this.add.image(0, CRYPT_Y0 * T, "painted_crypt").setOrigin(0, 0).setDepth(0);
+        this.addStaircase(16, CRYPT_Y0 + 2, true, "▲ Escritório", 16, 32); // sobe pro escritório
       } else {
         this.add.tileSprite(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T, "crypt0").setOrigin(0).setDepth(0);
         this.buildCrypt();
