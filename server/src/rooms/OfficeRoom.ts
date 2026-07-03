@@ -17,6 +17,14 @@ import {
 } from "../progress/store";
 import { getFlags } from "../gamification/flags";
 import { reviewDelivery, type ProofImage } from "../gamification/aiReview";
+import {
+  loadVault,
+  saveVault,
+  flushVaultSync,
+  parseVaultMarkdown,
+  type VaultEntry,
+  type EntryPub,
+} from "../vault/store";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; authToken?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -51,6 +59,11 @@ function autoHex(name: string): string {
 export class OfficeRoom extends Room<OfficeState> {
   maxClients = 50;
   private taskSeq = 0;
+  // Cofre de credenciais: array em MEMORIA, FORA do schema Colyseus (o estado vai pra todos,
+  // inclusive convidados). As senhas NUNCA entram no schema nem em broadcast — so saem por
+  // client.send pro solicitante. Carregado do disco (cifrado) no onCreate; persistido cifrado.
+  private vaultEntries: VaultEntry[] = [];
+  private vaultSeq = 0;
 
   async onCreate() {
     this.setState(new OfficeState());
@@ -109,6 +122,9 @@ export class OfficeRoom extends Room<OfficeState> {
       this.register(this.state.clientColors, t.client);
       this.register(this.state.memberColors, t.assignee);
     });
+
+    // Cofre: carrega (decifra) as entradas do disco pra memoria. Fica FORA do schema.
+    this.vaultEntries = loadVault();
 
     // Client-authoritative: cada cliente envia sua posicao; retransmitimos.
     this.onMessage("move", (client, msg: MoveMsg) => {
@@ -452,6 +468,98 @@ export class OfficeRoom extends Room<OfficeState> {
       if (p) p.streamingBoard = !!msg?.on;
     });
 
+    // ---------- cofre de credenciais (Central de Senhas) ----------
+    // TODOS exigem membro autenticado (memberId != ""). Convidado -> "vault:denied".
+    // A senha NUNCA entra no schema/broadcast — a lista vai como EntryPub (sem senha) e a
+    // senha de UM item so vai por client.send pro solicitante.
+
+    // Lista (sem senhas): so pro solicitante autenticado.
+    this.onMessage("vault:list", (client) => {
+      if (!this.vaultAuth(client)) return;
+      client.send("vault:list", { entries: this.vaultPub() });
+    });
+
+    // Revela a senha de UM item — so desse item, so pro solicitante.
+    this.onMessage("vault:reveal", (client, msg: { id?: string }) => {
+      if (!this.vaultAuth(client)) return;
+      const id = String(msg?.id ?? "");
+      const e = this.vaultEntries.find((v) => v.id === id);
+      if (!e) return;
+      client.send("vault:secret", { id: e.id, password: e.password });
+    });
+
+    // Cria (sem id) ou atualiza; carimba updatedAt/updatedBy; persiste; re-lista a todos logados.
+    this.onMessage("vault:save", (client, msg: { entry?: Partial<VaultEntry> }) => {
+      const mid = this.vaultAuth(client);
+      if (!mid) return;
+      const raw = msg?.entry;
+      if (!raw || typeof raw !== "object") return; // payload malformado -> ignora
+      const now = Date.now();
+      const id = String(raw.id ?? "").trim();
+      if (id) {
+        // atualizar item existente
+        const e = this.vaultEntries.find((v) => v.id === id);
+        if (!e) return;
+        e.group = this.vaultStr(raw.group, 40, e.group);
+        e.client = this.vaultStr(raw.client, 120, e.client);
+        e.service = this.vaultStr(raw.service, 120, e.service);
+        e.username = this.vaultStr(raw.username, 200, e.username);
+        // senha vazia = manter a atual (a EntryPub nao traz senha, entao editar sem digitar mantem)
+        if (typeof raw.password === "string" && raw.password.length > 0) {
+          e.password = raw.password.slice(0, 400);
+        }
+        e.url = this.vaultStr(raw.url, 400, e.url);
+        e.notes = this.vaultStr(raw.notes, 2000, e.notes);
+        e.updatedAt = now;
+        e.updatedBy = mid;
+      } else {
+        // criar novo item
+        const e: VaultEntry = {
+          id: `k${now.toString(36)}${(this.vaultSeq++).toString(36)}`,
+          group: this.vaultStr(raw.group, 40, "ativo") || "ativo",
+          client: this.vaultStr(raw.client, 120, ""),
+          service: this.vaultStr(raw.service, 120, ""),
+          username: this.vaultStr(raw.username, 200, ""),
+          password: typeof raw.password === "string" ? raw.password.slice(0, 400) : "",
+          url: this.vaultStr(raw.url, 400, ""),
+          notes: this.vaultStr(raw.notes, 2000, ""),
+          updatedAt: now,
+          updatedBy: mid,
+        };
+        this.vaultEntries.push(e);
+      }
+      saveVault(this.vaultEntries);
+      this.sendVaultListToAll();
+    });
+
+    // Remove; persiste; re-lista a todos logados.
+    this.onMessage("vault:delete", (client, msg: { id?: string }) => {
+      if (!this.vaultAuth(client)) return;
+      const id = String(msg?.id ?? "");
+      const i = this.vaultEntries.findIndex((v) => v.id === id);
+      if (i < 0) return;
+      this.vaultEntries.splice(i, 1);
+      saveVault(this.vaultEntries);
+      this.sendVaultListToAll();
+    });
+
+    // Importa de markdown: MESCLA (nao apaga os existentes); persiste; avisa a contagem + re-lista.
+    this.onMessage("vault:import", (client, msg: { text?: string }) => {
+      const mid = this.vaultAuth(client);
+      if (!mid) return;
+      const text = String(msg?.text ?? "");
+      const parsed = parseVaultMarkdown(text);
+      for (const e of parsed) {
+        e.updatedBy = mid; // carimba quem importou
+        this.vaultEntries.push(e);
+      }
+      if (parsed.length > 0) {
+        saveVault(this.vaultEntries);
+        this.sendVaultListToAll();
+      }
+      client.send("vault:imported", { count: parsed.length });
+    });
+
     console.log("[OfficeRoom] sala criada");
   }
 
@@ -705,6 +813,46 @@ export class OfficeRoom extends Room<OfficeState> {
     saveBoard({ tasks, clients, members });
   }
 
+  // ---------- cofre: helpers ----------
+
+  /**
+   * Autentica a acao no cofre. Devolve o memberId (trim) se o solicitante e membro logado;
+   * senao manda "vault:denied" e devolve "". NUNCA confie em memberId vindo do payload — usa
+   * SO o do Player (que veio do token verificado no onAuth).
+   */
+  private vaultAuth(client: Client): string {
+    const p = this.state.players.get(client.sessionId);
+    const mid = (p?.memberId || "").trim();
+    if (mid === "") {
+      client.send("vault:denied", {});
+      return "";
+    }
+    return mid;
+  }
+
+  /** Corta uma string do payload no limite; se nao for string, devolve o fallback. */
+  private vaultStr(v: unknown, max: number, fallback: string): string {
+    return typeof v === "string" ? v.slice(0, max) : fallback;
+  }
+
+  /** Versao publica das entradas: SEM senha, COM hasPassword. Nunca vaza a senha. */
+  private vaultPub(): EntryPub[] {
+    return this.vaultEntries.map((e) => {
+      const { password, ...rest } = e;
+      return { ...rest, hasPassword: !!password };
+    });
+  }
+
+  /** Re-manda "vault:list" (EntryPub[], sem senhas) so pros clientes com memberId != "". */
+  private sendVaultListToAll(): void {
+    const entries = this.vaultPub();
+    for (const c of this.clients) {
+      const p = this.state.players.get(c.sessionId);
+      if ((p?.memberId || "").trim() === "") continue; // convidado nao recebe o cofre
+      c.send("vault:list", { entries });
+    }
+  }
+
   /**
    * Identidade AUTENTICADA da sessão: vem do TOKEN emitido pelo /login (HMAC do memberId),
    * NUNCA do options.memberId cru — senão qualquer cliente se passa por outro (lê o progresso
@@ -755,6 +903,7 @@ export class OfficeRoom extends Room<OfficeState> {
     // onDispose — sem isso as ultimas alteracoes do board se perderiam.
     flushBoardSync();
     flushProgressSync(); // grava o progresso de gamificacao pendente tambem
-    console.log("[OfficeRoom] sala encerrada (board + progresso gravados)");
+    flushVaultSync(); // grava o cofre cifrado pendente tambem
+    console.log("[OfficeRoom] sala encerrada (board + progresso + cofre gravados)");
   }
 }

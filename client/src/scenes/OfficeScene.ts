@@ -4,8 +4,9 @@ import { joinOffice, getStateCallbacks } from "../net/room";
 import type { Room } from "../net/room";
 import { VoiceManager } from "../net/voice";
 import { KanbanBoard } from "../ui/kanban";
+import { VaultPanel, type EntryPub } from "../ui/vault";
 import { loadMember } from "../auth/login";
-import { getFlags } from "../net/config";
+import { getFlags, getVaultEnabled } from "../net/config";
 import { daysToDue } from "../util/overdue";
 
 const T = 32;
@@ -169,6 +170,8 @@ export class OfficeScene extends Phaser.Scene {
   private lastVoiceRecalc = 0; // throttle do recalculo dirigido por update de posicao (WS)
   private kanban?: KanbanBoard; // gestor de tarefas (overlay)
   private gestorBtn?: Phaser.GameObjects.Text;
+  private vault?: VaultPanel; // Central de Senhas (cofre — overlay)
+  private vaultBtn?: Phaser.GameObjects.Text;
 
   // HP / dano / morte
   private dead = false;
@@ -261,6 +264,9 @@ export class OfficeScene extends Phaser.Scene {
     this.kanban?.destroy();
     this.kanban = undefined;
     this.gestorBtn = undefined;
+    this.vault?.destroy();
+    this.vault = undefined;
+    this.vaultBtn = undefined;
     this.dead = false;
     this.myHp = 100;
     this.myMaxHp = 100;
@@ -520,6 +526,9 @@ export class OfficeScene extends Phaser.Scene {
       this.progressEl = undefined;
       this.kanban?.destroy();
       this.kanban = undefined;
+      this.vault?.destroy();
+      this.vault = undefined;
+      this.vaultBtn = undefined;
       if (this.onResizeRef) {
         this.scale.off(Phaser.Scale.Events.RESIZE, this.onResizeRef);
         this.onResizeRef = undefined;
@@ -554,6 +563,7 @@ export class OfficeScene extends Phaser.Scene {
       this.setupVoiceButton();
       this.setupShareButton();
       this.setupGestorButton();
+      this.setupVaultButton(); // 🔐 Central de Senhas (só cria o botão se o cofre estiver ligado)
       this.setupMicButton();
       this.setupHandButton();
       this.wireRoom(room, name, x, y);
@@ -574,6 +584,7 @@ export class OfficeScene extends Phaser.Scene {
       void this.voice.reconnect(room.sessionId, name).catch(() => {});
     }
     this.setupKanban(room);
+    this.setupVault(room);
     const $ = getStateCallbacks(room) as (obj: unknown) => any;
     $(room.state).players.onAdd((player: any, sid: string) => {
       if (sid !== room.sessionId) this.addRemote(sid, player);
@@ -627,6 +638,24 @@ export class OfficeScene extends Phaser.Scene {
         this.showAiFeedback(String(m?.status ?? ""), Number(m?.score ?? -1), String(m?.note ?? ""));
       },
     );
+    // Cofre (Central de Senhas): repassa as respostas do servidor pro painel. Guard padrão
+    // (this.room !== room) evita handler de sala antiga disparar após reconexão.
+    room.onMessage("vault:list", (m: { entries?: EntryPub[] }) => {
+      if (this.room !== room) return;
+      this.vault?.onList(Array.isArray(m?.entries) ? m.entries : []);
+    });
+    room.onMessage("vault:secret", (m: { id?: string; password?: string }) => {
+      if (this.room !== room) return;
+      this.vault?.onSecret(String(m?.id ?? ""), String(m?.password ?? ""));
+    });
+    room.onMessage("vault:imported", (m: { count?: number }) => {
+      if (this.room !== room) return;
+      this.vault?.onImported(Number(m?.count ?? 0));
+    });
+    room.onMessage("vault:denied", () => {
+      if (this.room !== room) return;
+      this.vault?.onDenied();
+    });
     // F5: alguém pediu reforço pro time (cooperação) — toast pra todos os outros.
     room.onMessage("help:called", (m: { name?: string }) => {
       if (this.room !== room) return;
@@ -719,6 +748,47 @@ export class OfficeScene extends Phaser.Scene {
     this.gestorBtn = btn;
     this.hudLayer?.add(btn);
     btn.on("pointerdown", () => this.kanban?.toggle());
+  }
+
+  /** (Re)cria a Central de Senhas ligada à sala atual (rebind em reconexão). Só se o cofre
+   *  estiver operável no servidor (VAULT_KEY presente). Espelha o cuidado do setupKanban. */
+  private setupVault(room: Room) {
+    if (!getVaultEnabled()) return;
+    const wasOpen = this.vault?.isOpen() ?? false;
+    this.vault?.destroy();
+    this.vault = new VaultPanel(room);
+    // Mesmo cuidado do kanban: enquanto o overlay do cofre está aberto, desliga o PONTEIRO do
+    // Phaser (senão o clique vaza pro canvas — muta o mic / chama alguém). Religa 150ms DEPOIS
+    // do fecho, com guard, pra não processar o clique do "✕ Fechar" no botão embaixo.
+    this.vault.onOpenChange = (open) => {
+      if (open) {
+        this.input.enabled = false;
+      } else {
+        this.time.delayedCall(150, () => {
+          if (!this.vault?.isOpen()) this.input.enabled = true;
+        });
+      }
+    };
+    if (wasOpen) this.vault.open();
+  }
+
+  private setupVaultButton() {
+    if (this.vaultBtn || !getVaultEnabled()) return; // só mostra o botão se o cofre estiver ligado
+    const btn = this.add
+      .text(this.scale.width - 16, 196, "🔐 Central de Senhas", {
+        fontFamily: "monospace",
+        fontSize: "14px",
+        color: "#ffffff",
+        backgroundColor: "#4a3a5a",
+        padding: { x: 9, y: 6 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH)
+      .setInteractive({ useHandCursor: true });
+    this.vaultBtn = btn;
+    this.hudLayer?.add(btn);
+    btn.on("pointerdown", () => this.vault?.toggle());
   }
 
   private handleDisconnect(name: string, x: number, y: number) {
@@ -1773,6 +1843,7 @@ export class OfficeScene extends Phaser.Scene {
     }
     this.room = undefined;
     this.kanban?.close(); // fecha o board (se aberto) — libera o teclado/overlay
+    this.vault?.close(true); // fecha o cofre (se aberto) — libera o teclado/overlay e limpa senhas
     const ov = document.createElement("div");
     ov.style.cssText =
       "position:fixed;inset:0;z-index:10001;display:flex;flex-direction:column;" +
@@ -2962,8 +3033,9 @@ export class OfficeScene extends Phaser.Scene {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setVelocity(0);
 
-    // com o gestor de tarefas aberto, o teclado e do board (nao move o boneco)
-    const uiOpen = this.kanban?.isOpen() ?? false;
+    // com o gestor de tarefas OU a central de senhas aberta, o teclado e do overlay DOM
+    // (nao move o boneco; libera digitar nos inputs)
+    const uiOpen = (this.kanban?.isOpen() ?? false) || (this.vault?.isOpen() ?? false);
     const jx = uiOpen ? 0 : this.joyVec.x;
     const jy = uiOpen ? 0 : this.joyVec.y;
     const J = 0.28; // zona morta do joystick
@@ -3207,6 +3279,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.gestorBtn) this.gestorBtn.setPosition(this.scale.width - 16, 88);
     if (this.micBtn) this.micBtn.setPosition(this.scale.width - 16, 124);
     if (this.handBtn) this.handBtn.setPosition(this.scale.width - 16, 160);
+    if (this.vaultBtn) this.vaultBtn.setPosition(this.scale.width - 16, 196);
     if (this.fireBtn) this.fireBtn.setPosition(this.scale.width - 22, this.scale.height - 22);
     if (this.isTouch) this.handlePinch();
     if (this.voice.sharing !== this.lastSharing) {

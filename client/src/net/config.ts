@@ -36,10 +36,16 @@ const TODOS_ON: GamifFlags = {
 let flags: GamifFlags = { ...TODOS_ON };
 let carregado = false;
 let approver = ""; // memberId de quem aprova entregas "sem comprovação" (vazio = qualquer um)
+let vaultEnabled = false; // Central de Senhas operável no servidor (VAULT_KEY presente). Default OFF.
 
 /** memberId (nome de login normalizado) do aprovador de entregas sem comprovação. */
 export function getApprover(): string {
   return approver;
+}
+
+/** true se o cofre (Central de Senhas) está operável no servidor (VAULT_KEY válida). */
+export function getVaultEnabled(): boolean {
+  return vaultEnabled;
 }
 
 /**
@@ -56,9 +62,10 @@ export async function loadConfig(): Promise<GamifFlags> {
       const r = await fetch(`${SERVER_HTTP_URL}/config`, { signal: ctrl.signal });
       clearTimeout(t);
       if (!r.ok) throw new Error(`status ${r.status}`);
-      const data = (await r.json()) as { flags?: Partial<GamifFlags>; approver?: string };
+      const data = (await r.json()) as { flags?: Partial<GamifFlags>; approver?: string; vault?: boolean };
       flags = { ...TODOS_ON, ...(data.flags ?? {}) };
       approver = typeof data.approver === "string" ? data.approver : "";
+      vaultEnabled = data.vault === true; // só liga o cofre se o servidor confirmar (default false)
       carregado = true;
       return flags;
     } catch {

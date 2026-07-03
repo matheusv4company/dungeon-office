@@ -9,6 +9,7 @@ import { OfficeRoom } from "./rooms/OfficeRoom";
 import { loadBoard } from "./board/store";
 import { login, normId, listMemberNames, issueToken } from "./progress/store";
 import { getFlags } from "./gamification/flags";
+import { vaultReady } from "./vault/store";
 
 // Carrega server/.env (chaves do LiveKit), se existir. Node 20.12+/26.
 try {
@@ -39,6 +40,7 @@ app.get("/health", (_req, res) => {
     voice: voiceReady,
     ai: !!process.env.ANTHROPIC_API_KEY,
     aiReview: getFlags().aiReview,
+    vault: vaultReady(), // booleano — VAULT_KEY presente e valida (nunca a chave)
   });
 });
 
@@ -47,7 +49,7 @@ app.get("/health", (_req, res) => {
 app.get("/config", (_req, res) => {
   // approver = memberId (nome de login normalizado) de quem aprova entregas "sem comprovacao".
   // O cliente usa pra mostrar o botao "Aprovar" só pra ele; vazio = qualquer um aprova.
-  res.json({ flags: getFlags(), approver: normId(process.env.GAMIF_APPROVER || "") });
+  res.json({ flags: getFlags(), approver: normId(process.env.GAMIF_APPROVER || ""), vault: vaultReady() });
 });
 
 // Token do LiveKit (assinado com a Secret — nunca exposta ao cliente).
