@@ -43,11 +43,15 @@ const VOICE_STALE_MS = 1500; // sem update de posicao ha mais que isso: nao conf
 // A posicao rastreada e o CENTRO do sprite, que fica ~0.6 tile ACIMA dos pes; por
 // isso a zona sobe ate a parede de cima (OY) e encosta nas laterais — assim quem
 // fica colado em qualquer parede continua dentro da bolha, e nada vaza pro lado de fora.
+// Lado de uma sala de reunião: "hedge" = sebe visível que colide; "seal" = colisão invisível
+// (onde já há um móvel pintado que faz de parede, evitando sobrepor sebe em cima do móvel).
+type MeetingSide = "hedge" | "seal";
+
 // Zonas de reunião (bolhas de áudio isoladas) — alinhadas aos 3 TAPETES do escritório pintado.
 const MEETING_ZONES = [
-  { x1: 5 * T, y1: (OY + 13) * T, x2: 11 * T, y2: (OY + 19) * T }, // sala azul (baixo-esq) — interior
-  { x1: 20 * T, y1: (OY + 6) * T, x2: 26 * T, y2: (OY + 12) * T }, // sala vermelha (cima-dir) — interior
-  { x1: 20 * T, y1: (OY + 13) * T, x2: 26 * T, y2: (OY + 19) * T }, // sala dourada (baixo-dir) — interior
+  { x1: 5 * T, y1: (OY + 13) * T, x2: 12 * T, y2: (OY + 19) * T }, // sala azul (baixo-esq) — interior
+  { x1: 19 * T, y1: (OY + 7) * T, x2: 26 * T, y2: (OY + 13) * T }, // sala vermelha (cima-dir) — interior
+  { x1: 19 * T, y1: (OY + 13) * T, x2: 26 * T, y2: (OY + 19) * T }, // sala dourada (baixo-dir) — interior
 ];
 function zoneAt(x: number, y: number): number {
   for (let i = 0; i < MEETING_ZONES.length; i++) {
@@ -318,7 +322,7 @@ export class OfficeScene extends Phaser.Scene {
       band(16, 0, 21, 1);
       band(1, 13, 4, 15); // tide pool (inferior esquerdo)
       // ESCRITORIO (OY..DIV2): engrossa a parede pintada pra 2 tiles (borda ja tem 1)
-      band(0, OY, COLS - 1, OY + 1); // topo
+      band(0, OY, COLS - 1, OY + 3); // topo: pedra(2) + estantes ate ~row 3 -> personagem para no piso
       band(0, DIV2 - 1, COLS - 1, DIV2); // base
       band(0, OY, 1, DIV2); // esquerda
       band(COLS - 2, OY, COLS - 1, DIV2); // direita
@@ -358,7 +362,7 @@ export class OfficeScene extends Phaser.Scene {
     this.buildFloorInto(0, () => {
       if (this.paintedMap) {
         this.add.image(0, 0, "painted_beach").setOrigin(0, 0).setDepth(0);
-        this.addStaircase(16, 14, false, "▼ Escritório", 16, 20); // escada continua funcionando
+        this.addStaircase(16, 14, false, "▼ Escritório", 16, 23); // chega no piso, abaixo da parede norte
       } else {
         this.add.tileSprite(0, 0, W, OY * T, "sand1").setOrigin(0).setDepth(0);
         this.buildBeach();
@@ -368,16 +372,23 @@ export class OfficeScene extends Phaser.Scene {
     this.buildFloorInto(1, () => {
       if (this.paintedMap) {
         this.add.image(0, OY * T, "painted_office").setOrigin(0, 0).setDepth(0);
-        this.addStaircase(16, OY + 2, true, "▲ Praia", 16, 13); // sobe pra praia
+        this.addStaircase(16, OY + 5, true, "▲ Praia", 16, 13); // sobe pra praia (dentro da sala, longe da parede)
         this.addStaircase(16, OY + 17, false, "▼ Cripta", 16, 42); // desce pra cripta
-        // 3 salas de reunião: parede de pedra visível + colisão + porta (vão de 2 tiles)
-        // voltada pro centro. O interior de cada uma é uma bolha de áudio (MEETING_ZONES).
-        this.addMeetingRoom(walls, 4, OY + 12, 11, OY + 19, "right", OY + 15); // azul (esq)
-        this.addMeetingRoom(walls, 19, OY + 5, 26, OY + 12, "left", OY + 8); // vermelha (cima-dir)
-        this.addMeetingRoom(walls, 19, OY + 12, 26, OY + 19, "left", OY + 15); // dourada (baixo-dir)
-        this.addRoomLabel("🗣️ Reunião", 7.5 * T, (OY + 15.5) * T);
-        this.addRoomLabel("🗣️ Reunião", 22.5 * T, (OY + 8.5) * T);
-        this.addRoomLabel("🗣️ Reunião", 22.5 * T, (OY + 15.5) * T);
+        // 3 salas de reunião: hedge VISÍVEL (+colisão) nos 2 lados abertos, colisão INVISÍVEL
+        // nos 2 lados com móveis (o móvel pintado faz de parede) — cerca sem sobrepor nada.
+        // Porta (vão de 2 tiles) voltada pro centro. Interior = bolha de áudio (MEETING_ZONES).
+        this.addMeetingRoom(walls, 4, OY + 12, 12, OY + 19,
+          { top: "hedge", right: "hedge", bottom: "seal", left: "seal" },
+          { side: "right", at: OY + 15 }); // azul (baixo-esq): abre pra cima+direita
+        this.addMeetingRoom(walls, 18, OY + 6, 26, OY + 13,
+          { top: "seal", right: "seal", bottom: "hedge", left: "hedge" },
+          { side: "left", at: OY + 9 }); // vermelha (cima-dir): abre pra baixo+esquerda
+        this.addMeetingRoom(walls, 18, OY + 12, 26, OY + 19,
+          { top: "hedge", right: "seal", bottom: "seal", left: "hedge" },
+          { side: "left", at: OY + 15 }); // dourada (baixo-dir): abre pra cima+esquerda
+        this.addRoomLabel("🗣️ Reunião", 8 * T, (OY + 15.5) * T);
+        this.addRoomLabel("🗣️ Reunião", 22 * T, (OY + 9.5) * T);
+        this.addRoomLabel("🗣️ Reunião", 22 * T, (OY + 15.5) * T);
       } else {
         this.add.tileSprite(0, OY * T, W, OFFICE_ROWS * T, "floor").setOrigin(0).setDepth(0);
         this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
@@ -2871,26 +2882,28 @@ export class OfficeScene extends Phaser.Scene {
     r1: number,
     c2: number,
     r2: number,
-    side: "left" | "right" | "top" | "bottom",
-    door: number,
+    sides: { top: MeetingSide; right: MeetingSide; bottom: MeetingSide; left: MeetingSide },
+    door: { side: "top" | "right" | "bottom" | "left"; at: number },
   ) {
-    const gap = (s: "left" | "right" | "top" | "bottom", n: number) =>
-      side === s && n >= door && n <= door + 1;
-    const put = (c: number, r: number) => {
+    const gap = (s: "top" | "right" | "bottom" | "left", n: number) =>
+      door.side === s && n >= door.at && n <= door.at + 1;
+    // hedge = parede visível (colide); seal = colisão invisível (o móvel pintado faz de parede)
+    const put = (c: number, r: number, visible: boolean) => {
       const w = walls.create(
         c * T + T / 2,
         r * T + T / 2,
         (c + r) % 4 === 0 ? "wall2" : "wall",
       ) as Phaser.Physics.Arcade.Sprite;
-      w.setTint(0xc9b48f).setDepth(r * T); // pedra quente + y-sort com o personagem
+      if (visible) w.setTint(0x6f8f4a).setDepth(r * T); // sebe verde + y-sort com o personagem
+      else w.setAlpha(0).setDepth(1); // invisível, só colisão
     };
     for (let c = c1; c <= c2; c++) {
-      if (!gap("top", c)) put(c, r1);
-      if (!gap("bottom", c)) put(c, r2);
+      if (!gap("top", c)) put(c, r1, sides.top === "hedge");
+      if (!gap("bottom", c)) put(c, r2, sides.bottom === "hedge");
     }
     for (let r = r1 + 1; r <= r2 - 1; r++) {
-      if (!gap("left", r)) put(c1, r);
-      if (!gap("right", r)) put(c2, r);
+      if (!gap("left", r)) put(c1, r, sides.left === "hedge");
+      if (!gap("right", r)) put(c2, r, sides.right === "hedge");
     }
   }
 
