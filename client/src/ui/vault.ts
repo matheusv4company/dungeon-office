@@ -673,7 +673,7 @@ export class VaultPanel {
 
   // ---------- modal criar / editar ----------
 
-  private openEditor(entry: EntryPub | null) {
+  private openEditor(entry: EntryPub | null, prefill?: { group?: string; client?: string }) {
     const editing = !!entry;
     this.modalBg.innerHTML = "";
     const m = document.createElement("div");
@@ -695,7 +695,7 @@ export class VaultPanel {
     const groupSel = document.createElement("select");
     for (const o of GROUP_OPTS) groupSel.appendChild(new Option(o.label, o.value));
     // grupo livre: se o valor atual não está nas opções, adiciona
-    const curGroup = entry?.group ?? "ativo";
+    const curGroup = entry?.group ?? prefill?.group ?? "ativo";
     if (curGroup && !GROUP_OPTS.some((o) => o.value === curGroup)) {
       groupSel.appendChild(new Option(curGroup, curGroup));
     }
@@ -703,7 +703,7 @@ export class VaultPanel {
     mk("Grupo", groupSel);
 
     const client = document.createElement("input");
-    client.value = entry?.client ?? "";
+    client.value = entry?.client ?? prefill?.client ?? "";
     client.placeholder = "Nome do cliente";
     mk("Cliente", client);
 
@@ -747,17 +747,15 @@ export class VaultPanel {
     cancel.className = "vt-btn close";
     cancel.textContent = "Cancelar";
     cancel.onclick = () => this.closeModal();
-    const save = document.createElement("button");
-    save.className = "vt-btn add";
-    save.textContent = "Salvar";
-    save.onclick = () => {
+    // valida + envia; devolve true se salvou (usado pelo "Salvar" e pelo "Salvar e +1")
+    const doSave = (): boolean => {
       err.textContent = "";
       // ao criar, senha é obrigatória; ao editar, vazio significa "manter a atual"
       const pw = password.value;
       if (!editing && !pw) {
         err.textContent = "Informe a senha.";
         password.focus();
-        return;
+        return false;
       }
       const payload: VaultSavePayload = {
         group: groupSel.value.slice(0, LIMITS.group),
@@ -770,13 +768,35 @@ export class VaultPanel {
       };
       if (editing && entry) payload.id = entry.id;
       this.room.send("vault:save", { entry: payload });
-      this.closeModal();
+      return true;
+    };
+    const save = document.createElement("button");
+    save.className = "vt-btn add";
+    save.textContent = "Salvar";
+    save.onclick = () => {
+      if (doSave()) this.closeModal();
     };
     actions.append(cancel, save);
+    // no cadastro (não na edição): salva e reabre já com o mesmo cliente+grupo, pra
+    // emendar vários serviços do mesmo cliente sem redigitar (fluxo principal aqui).
+    if (!editing) {
+      const saveMore = document.createElement("button");
+      saveMore.className = "vt-btn add";
+      saveMore.textContent = "Salvar e +1";
+      saveMore.title = "Salva e abre outro já com o mesmo cliente e grupo";
+      saveMore.onclick = () => {
+        const g = groupSel.value;
+        const cl = client.value.trim();
+        if (doSave()) this.openEditor(null, { group: g, client: cl });
+      };
+      actions.append(saveMore);
+    }
     m.appendChild(actions);
     this.modalBg.appendChild(m);
     this.modalBg.classList.add("open");
-    client.focus();
+    // ao emendar (cliente já preenchido), foca direto no Serviço; senão no Cliente
+    if (!editing && prefill?.client) service.focus();
+    else client.focus();
   }
 
   // ---------- modal importar de .md ----------
