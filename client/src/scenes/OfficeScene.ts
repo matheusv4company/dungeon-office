@@ -45,9 +45,9 @@ const VOICE_STALE_MS = 1500; // sem update de posicao ha mais que isso: nao conf
 // fica colado em qualquer parede continua dentro da bolha, e nada vaza pro lado de fora.
 // Zonas de reunião (bolhas de áudio isoladas) — alinhadas aos 3 TAPETES do escritório pintado.
 const MEETING_ZONES = [
-  { x1: 5 * T, y1: (OY + 13) * T, x2: 10 * T, y2: (OY + 18) * T }, // tapete azul (baixo-esq)
-  { x1: 19 * T, y1: (OY + 6) * T, x2: 25 * T, y2: (OY + 12) * T }, // tapete vermelho (cima-dir)
-  { x1: 19 * T, y1: (OY + 13) * T, x2: 25 * T, y2: (OY + 19) * T }, // tapete dourado (baixo-dir)
+  { x1: 5 * T, y1: (OY + 13) * T, x2: 11 * T, y2: (OY + 19) * T }, // sala azul (baixo-esq) — interior
+  { x1: 20 * T, y1: (OY + 6) * T, x2: 26 * T, y2: (OY + 12) * T }, // sala vermelha (cima-dir) — interior
+  { x1: 20 * T, y1: (OY + 13) * T, x2: 26 * T, y2: (OY + 19) * T }, // sala dourada (baixo-dir) — interior
 ];
 function zoneAt(x: number, y: number): number {
   for (let i = 0; i < MEETING_ZONES.length; i++) {
@@ -303,6 +303,31 @@ export class OfficeScene extends Phaser.Scene {
       for (let c = 1; c <= 9; c++) set(c, OY + 7);
       set(4, OY + 7, false);
     }
+    // Fundo pintado: colisao MEDIDA em cima da arte (paredes grossas + mar). Cada celula
+    // vira um corpo fisico invisivel (alpha 0) no loop de paredes abaixo. Medido nas grades
+    // grid_beach/office/crypt.png. As paredes das salas de reuniao sao feitas a parte (visiveis).
+    if (this.paintedMap) {
+      const band = (c1: number, r1: number, c2: number, r2: number) => {
+        for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) set(c, r);
+      };
+      // PRAIA (0..16): mar solido em degraus seguindo o litoral + a pocinha do canto
+      band(0, 0, 1, 5);
+      band(2, 0, 3, 4);
+      band(4, 0, 8, 3);
+      band(9, 0, 15, 2);
+      band(16, 0, 21, 1);
+      band(1, 13, 4, 15); // tide pool (inferior esquerdo)
+      // ESCRITORIO (OY..DIV2): engrossa a parede pintada pra 2 tiles (borda ja tem 1)
+      band(0, OY, COLS - 1, OY + 1); // topo
+      band(0, DIV2 - 1, COLS - 1, DIV2); // base
+      band(0, OY, 1, DIV2); // esquerda
+      band(COLS - 2, OY, COLS - 1, DIV2); // direita
+      // CRIPTA (CRYPT_Y0..fim): parede de pedra de 2 tiles em toda a borda
+      band(0, CRYPT_Y0, COLS - 1, CRYPT_Y0 + 1); // topo
+      band(0, ROWS - 2, COLS - 1, ROWS - 1); // base
+      band(0, CRYPT_Y0, 1, ROWS - 1); // esquerda
+      band(COLS - 2, CRYPT_Y0, COLS - 1, ROWS - 1); // direita
+    }
 
     // ---- objetos por andar (visibilidade alternada; tudo na lista da cena) ----
     this.floorObjs = [[], [], []];
@@ -345,10 +370,14 @@ export class OfficeScene extends Phaser.Scene {
         this.add.image(0, OY * T, "painted_office").setOrigin(0, 0).setDepth(0);
         this.addStaircase(16, OY + 2, true, "▲ Praia", 16, 13); // sobe pra praia
         this.addStaircase(16, OY + 17, false, "▼ Cripta", 16, 42); // desce pra cripta
-        // rótulos nos 3 tapetes = 3 salas de reunião (bolhas de áudio isoladas)
+        // 3 salas de reunião: parede de pedra visível + colisão + porta (vão de 2 tiles)
+        // voltada pro centro. O interior de cada uma é uma bolha de áudio (MEETING_ZONES).
+        this.addMeetingRoom(walls, 4, OY + 12, 11, OY + 19, "right", OY + 15); // azul (esq)
+        this.addMeetingRoom(walls, 19, OY + 5, 26, OY + 12, "left", OY + 8); // vermelha (cima-dir)
+        this.addMeetingRoom(walls, 19, OY + 12, 26, OY + 19, "left", OY + 15); // dourada (baixo-dir)
         this.addRoomLabel("🗣️ Reunião", 7.5 * T, (OY + 15.5) * T);
-        this.addRoomLabel("🗣️ Reunião", 22 * T, (OY + 9) * T);
-        this.addRoomLabel("🗣️ Reunião", 22 * T, (OY + 16) * T);
+        this.addRoomLabel("🗣️ Reunião", 22.5 * T, (OY + 8.5) * T);
+        this.addRoomLabel("🗣️ Reunião", 22.5 * T, (OY + 15.5) * T);
       } else {
         this.add.tileSprite(0, OY * T, W, OFFICE_ROWS * T, "floor").setOrigin(0).setDepth(0);
         this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
@@ -2827,6 +2856,42 @@ export class OfficeScene extends Phaser.Scene {
       }
     }
     if (!on) this.stairLatch = false;
+  }
+
+  /**
+   * Sala de reunião do escritório pintado: paredes de pedra VISÍVEIS + colisão, com uma porta
+   * (vão de 2 tiles) voltada pro centro — assim dá pra ver quem está dentro/fora. Coords em
+   * TILES do mundo (retângulo c1,r1..c2,r2 inclusive). `side`+`door` = onde fica o vão (2 tiles
+   * a partir de `door`). As paredes entram no grupo `walls` (colidem) e, por serem criadas dentro
+   * do buildFloorInto(1), ficam só no andar do escritório.
+   */
+  private addMeetingRoom(
+    walls: Phaser.Physics.Arcade.StaticGroup,
+    c1: number,
+    r1: number,
+    c2: number,
+    r2: number,
+    side: "left" | "right" | "top" | "bottom",
+    door: number,
+  ) {
+    const gap = (s: "left" | "right" | "top" | "bottom", n: number) =>
+      side === s && n >= door && n <= door + 1;
+    const put = (c: number, r: number) => {
+      const w = walls.create(
+        c * T + T / 2,
+        r * T + T / 2,
+        (c + r) % 4 === 0 ? "wall2" : "wall",
+      ) as Phaser.Physics.Arcade.Sprite;
+      w.setTint(0xc9b48f).setDepth(r * T); // pedra quente + y-sort com o personagem
+    };
+    for (let c = c1; c <= c2; c++) {
+      if (!gap("top", c)) put(c, r1);
+      if (!gap("bottom", c)) put(c, r2);
+    }
+    for (let r = r1 + 1; r <= r2 - 1; r++) {
+      if (!gap("left", r)) put(c1, r);
+      if (!gap("right", r)) put(c2, r);
+    }
   }
 
   /** Desenha uma escada e registra a zona que leva ao andar vizinho. */

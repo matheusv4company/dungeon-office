@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "escritorio",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "lpc-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "http-server", "C:/Users/mathe/AppData/Local/Temp/claude/C--Users-mathe-OneDrive-Desktop-Claude-Code-Clientes-marketing/e4e6a82e-e75c-4501-93ff-46b67598f828/scratchpad/preview", "-p", "5188", "-c-1"],
+      "port": 5188
+    }
+  ]
+}
