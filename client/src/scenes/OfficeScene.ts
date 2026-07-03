@@ -103,6 +103,7 @@ export class OfficeScene extends Phaser.Scene {
   private obstacles: Phaser.GameObjects.GameObject[] = [];
   private charIndex = 0;
   private authToken = ""; // token de sessão do /login (vazio = convidado)
+  private paintedMap = false; // re-skin: usa os fundos pintados dos 3 andares
   private nameLabel!: Phaser.GameObjects.Text;
 
   // multiplayer
@@ -271,6 +272,8 @@ export class OfficeScene extends Phaser.Scene {
     this.darkRT = undefined;
     this.cryptLights = [];
 
+    this.paintedMap = getFlags().paintedMap; // re-skin pintado (default on; PAINTED_MAP=0 desliga)
+
     // ---- grade de colisao (andares isolados; divisorias SEM passagem) ----
     const solid: boolean[][] = Array.from({ length: ROWS }, () =>
       Array<boolean>(COLS).fill(false),
@@ -288,10 +291,13 @@ export class OfficeScene extends Phaser.Scene {
       set(0, r);
       set(COLS - 1, r);
     }
-    // paredes internas do escritorio (sala de reuniao)
-    for (let r = 1; r <= 7; r++) set(9, OY + r);
-    for (let c = 1; c <= 9; c++) set(c, OY + 7);
-    set(4, OY + 7, false);
+    // paredes internas do escritorio (sala de reuniao) — só no mapa antigo; o fundo pintado
+    // não tem essas paredes, então com paintedMap deixamos só borda + divisórias.
+    if (!this.paintedMap) {
+      for (let r = 1; r <= 7; r++) set(9, OY + r);
+      for (let c = 1; c <= 9; c++) set(c, OY + 7);
+      set(4, OY + 7, false);
+    }
 
     // ---- objetos por andar (visibilidade alternada; tudo na lista da cena) ----
     this.floorObjs = [[], [], []];
@@ -304,6 +310,7 @@ export class OfficeScene extends Phaser.Scene {
         const key = (r * 7 + c) % 4 === 0 ? "wall2" : "wall";
         const w = walls.create(c * T + T / 2, r * T + T / 2, key) as Phaser.Physics.Arcade.Sprite;
         w.setDepth(1);
+        if (this.paintedMap) w.setAlpha(0); // fundo pintado já tem as paredes; só a física fica
         const fr = r < OY ? 0 : r <= DIV2 ? 1 : 2;
         if (fr === 0) w.setTint(0xcdb98a);
         else if (fr === 2) w.setTint(0x4a4660);
@@ -319,28 +326,37 @@ export class OfficeScene extends Phaser.Scene {
     this.makeLightTexture("lightBig", 300);
     this.makeLightTexture("lightSmall", 190);
     this.buildFloorInto(0, () => {
-      this.add.tileSprite(0, 0, W, OY * T, "sand1").setOrigin(0).setDepth(0);
-      this.buildBeach();
-      // 🌋 terremoto: rachaduras na areia (tons de areia molhada)
-      this.drawCracks(10, OY * T - 10, { crack: 0x6b5836, edge: 0xe9d9a8, rubble: 0x5a4a2e });
+      if (this.paintedMap) {
+        this.add.image(0, 0, "painted_beach").setOrigin(0, 0).setDepth(0);
+      } else {
+        this.add.tileSprite(0, 0, W, OY * T, "sand1").setOrigin(0).setDepth(0);
+        this.buildBeach();
+        this.drawCracks(10, OY * T - 10, { crack: 0x6b5836, edge: 0xe9d9a8, rubble: 0x5a4a2e });
+      }
     });
     this.buildFloorInto(1, () => {
-      this.add.tileSprite(0, OY * T, W, OFFICE_ROWS * T, "floor").setOrigin(0).setDepth(0);
-      this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
-      this.buildOfficeDecor(OY);
-      // 🌋 rachaduras no piso do escritório (fendas escuras)
-      this.drawCracks(OY * T + 10, CRYPT_Y0 * T - 10, { crack: 0x2b2b33, edge: 0x8a8a95, rubble: 0x3a3a42 });
+      if (this.paintedMap) {
+        this.add.image(0, OY * T, "painted_office").setOrigin(0, 0).setDepth(0);
+      } else {
+        this.add.tileSprite(0, OY * T, W, OFFICE_ROWS * T, "floor").setOrigin(0).setDepth(0);
+        this.add.image(4 * T + T / 2, (OY + 7) * T + T / 2, "door_open").setDepth(1);
+        this.buildOfficeDecor(OY);
+        this.drawCracks(OY * T + 10, CRYPT_Y0 * T - 10, { crack: 0x2b2b33, edge: 0x8a8a95, rubble: 0x3a3a42 });
+      }
     });
     this.buildFloorInto(2, () => {
-      this.add.tileSprite(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T, "crypt0").setOrigin(0).setDepth(0);
-      this.buildCrypt();
-      // 🌋 rachaduras na cripta (fenda quase preta com brilho ciano vazando — combina c/ o Núcleo)
-      this.drawCracks(CRYPT_Y0 * T + 10, ROWS * T - 10, {
-        crack: 0x07070d,
-        edge: 0x3a3550,
-        glow: 0x6ee7ff,
-        rubble: 0x14121c,
-      });
+      if (this.paintedMap) {
+        this.add.image(0, CRYPT_Y0 * T, "painted_crypt").setOrigin(0, 0).setDepth(0);
+      } else {
+        this.add.tileSprite(0, CRYPT_Y0 * T, W, (ROWS - CRYPT_Y0) * T, "crypt0").setOrigin(0).setDepth(0);
+        this.buildCrypt();
+        this.drawCracks(CRYPT_Y0 * T + 10, ROWS * T - 10, {
+          crack: 0x07070d,
+          edge: 0x3a3550,
+          glow: 0x6ee7ff,
+          rubble: 0x14121c,
+        });
+      }
     });
 
     // ---- player ----
@@ -2721,6 +2737,7 @@ export class OfficeScene extends Phaser.Scene {
       if (!solid[row][c]) continue;
       const key = (row * 7 + c) % 4 === 0 ? "wall2" : "wall";
       const img = this.add.image(c * T + T / 2, row * T + T / 2, key).setTint(tint).setDepth(1);
+      if (this.paintedMap) img.setAlpha(0); // fundo pintado já mostra a divisória
       this.floorObjs[floor].push(img);
     }
   }

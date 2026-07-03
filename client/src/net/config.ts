@@ -14,6 +14,7 @@ export type GamifFlags = {
   cosmetics: boolean; // F8 — cosmeticos + celebracao
   social: boolean; // F9 — streak de time / cooperacao
   novaEra: boolean; // NE — mudanca estetica da nova fase (Nucleo, cripta ascendida, cristal)
+  paintedMap: boolean; // re-skin: fundos pintados dos 3 andares
 };
 
 // Default: tudo LIGADO (mesmo default do servidor). Se o /config falhar no boot, o jogo
@@ -29,6 +30,7 @@ const TODOS_ON: GamifFlags = {
   cosmetics: true,
   social: true,
   novaEra: true,
+  paintedMap: true,
 };
 
 let flags: GamifFlags = { ...TODOS_ON };

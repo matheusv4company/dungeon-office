@@ -75,6 +75,12 @@ export class BootScene extends Phaser.Scene {
     this.load.image("stairs_up", "assets/dungeon/gateways/stone_stairs_up.png");
     this.load.image("stairs_down", "assets/dungeon/gateways/stone_stairs_down.png");
 
+    // Re-skin: fundos PINTADOS dos 3 andares (Gemini/nano banana). Usados quando o flag
+    // paintedMap está on (default). Cada um já vem no tamanho exato do andar.
+    this.load.image("painted_beach", "assets/painted/beach.png");
+    this.load.image("painted_office", "assets/painted/office.png");
+    this.load.image("painted_crypt", "assets/painted/crypt.png");
+
     // Personagens (LPC, CC-BY-SA) — sheets 9x4 de 64px (caminhada nas 4 direcoes)
     CHARACTERS.forEach((c) =>
       this.load.spritesheet(charKey(c.index), `assets/chars/char${c.index}.png`, {

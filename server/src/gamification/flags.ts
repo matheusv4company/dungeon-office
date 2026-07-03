@@ -15,6 +15,7 @@ export type GamifFlags = {
   cosmetics: boolean; // F8 — cosmeticos + celebracao
   social: boolean; // F9 — streak de time / cooperacao
   novaEra: boolean; // NE — mudanca estetica da nova fase (Nucleo, cripta ascendida, cristal)
+  paintedMap: boolean; // re-skin: fundos pintados (nano banana) dos 3 andares no lugar dos tiles
 };
 
 // Desliga com "0", "false", "off" ou "no" (qualquer caixa); qualquer outro valor —
@@ -42,5 +43,7 @@ export function getFlags(): GamifFlags {
     cosmetics: f("GAMIF_COSMETICS"),
     social: f("GAMIF_SOCIAL"),
     novaEra: f("GAMIF_NOVA_ERA"),
+    // visual, NÃO gated pelo GAMIF_ALL (toggle independente): desliga com PAINTED_MAP=0
+    paintedMap: ligado("PAINTED_MAP"),
   };
 }
