@@ -7,7 +7,7 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 import { AccessToken } from "livekit-server-sdk";
 import { OfficeRoom } from "./rooms/OfficeRoom";
 import { loadBoard } from "./board/store";
-import { login, normId, listMemberNames, issueToken } from "./progress/store";
+import { login, normId, listMemberNames, issueToken, applyLevelGrants } from "./progress/store";
 import { getFlags } from "./gamification/flags";
 import { vaultReady } from "./vault/store";
 
@@ -17,6 +17,9 @@ try {
 } catch {
   /* sem .env — voz fica desativada ate configurar */
 }
+
+// Concede nível a membros via GAMIF_LEVELS="Nome=10" (piso; nunca reduz). No boot.
+applyLevelGrants();
 
 const port = Number(process.env.PORT ?? 2567);
 const LK_URL = process.env.LIVEKIT_URL;

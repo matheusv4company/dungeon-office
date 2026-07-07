@@ -371,3 +371,37 @@ export function clawbackPE(memberId: string, pe: number, week?: string): Progres
   }
   return undefined;
 }
+
+/**
+ * Concede nível a membros via env GAMIF_LEVELS (ex.: "Matheus=10" ou "matheus=10,lucia=5").
+ * É um PISO: só ELEVA o XP até o mínimo do nível pedido — NUNCA reduz o que a pessoa já ganhou.
+ * Roda no boot do servidor (idempotente; re-aplicar não muda nada). Membro que ainda não logou
+ * com PIN é ignorado (com aviso). Serve pra dar/testar nível sem editar o arquivo na mão.
+ */
+export function applyLevelGrants(): void {
+  const spec = process.env.GAMIF_LEVELS;
+  if (!spec) return;
+  const data = load();
+  let changed = false;
+  for (const pair of spec.split(",")) {
+    const [rawName, rawLvl] = pair.split("=");
+    const id = normId(rawName || "");
+    const lvl = Math.max(1, Math.min(50, Math.trunc(Number(rawLvl)) || 0));
+    if (!id) continue;
+    const m = data.members[id];
+    if (!m) {
+      console.log(`[grant] membro "${id}" nao encontrado (ainda nao logou com PIN?) — ignorado`);
+      continue;
+    }
+    const target = xpForLevel(lvl);
+    if (m.xp < target) {
+      m.xp = target;
+      m.level = levelFromXp(m.xp);
+      changed = true;
+      console.log(`[grant] "${id}" -> nivel ${m.level} (xp ${m.xp})`);
+    } else {
+      console.log(`[grant] "${id}" ja em nivel ${m.level} (xp ${m.xp} >= ${target}) — mantido`);
+    }
+  }
+  if (changed) writeNow();
+}
