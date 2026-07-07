@@ -7,6 +7,7 @@ import { KanbanBoard } from "../ui/kanban";
 import { VaultPanel, type EntryPub } from "../ui/vault";
 import { loadMember } from "../auth/login";
 import { getFlags, getVaultEnabled } from "../net/config";
+import { COLLISION } from "../mapCollision";
 import { daysToDue } from "../util/overdue";
 
 const T = 32;
@@ -311,54 +312,21 @@ export class OfficeScene extends Phaser.Scene {
       for (let c = 1; c <= 9; c++) set(c, OY + 7);
       set(4, OY + 7, false);
     }
-    // Fundo pintado: colisao MEDIDA em cima da arte (paredes grossas + mar). Cada celula
-    // vira um corpo fisico invisivel (alpha 0) no loop de paredes abaixo. Medido nas grades
-    // grid_beach/office/crypt.png. As paredes das salas de reuniao sao feitas a parte (visiveis).
+    // Fundo pintado: colisão POR TILE detectada por PIXEL (chão vs objeto), do arquivo
+    // mapCollision.ts (gerado por reskin-candidatas/classify.mjs e conferido no mapa aprovado).
+    // Já inclui paredes, mar, pier (andável), móveis, árvores (só o TRONCO — a copa passa por
+    // baixo via painted_canopy), sarcófagos e as paredes das salas de reunião (com porta).
+    // A borda + divisórias (acima) garantem o isolamento entre andares.
     if (this.paintedMap) {
-      const band = (c1: number, r1: number, c2: number, r2: number) => {
-        for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) set(c, r);
+      const apply = (grid: string[], baseRow: number) => {
+        for (let r = 0; r < grid.length; r++) {
+          const row = grid[r];
+          for (let c = 0; c < row.length; c++) if (row[c] === "1") set(c, baseRow + r);
+        }
       };
-      // PRAIA (0..16): mar solido em degraus seguindo o litoral + a pocinha do canto
-      band(0, 0, 1, 5);
-      band(2, 0, 3, 4);
-      band(4, 0, 8, 3);
-      band(9, 0, 15, 2);
-      band(16, 0, 21, 1);
-      band(1, 13, 4, 15); // tide pool (inferior esquerdo)
-      // ESCRITORIO (OY..DIV2): engrossa a parede pintada pra 2 tiles (borda ja tem 1)
-      band(0, OY, COLS - 1, OY + 3); // topo: pedra(2) + estantes ate ~row 3 -> personagem para no piso
-      band(0, DIV2 - 1, COLS - 1, DIV2); // base
-      band(0, OY, 1, DIV2); // esquerda
-      band(COLS - 2, OY, COLS - 1, DIV2); // direita
-      // CRIPTA (CRYPT_Y0..fim): parede de pedra de 2 tiles em toda a borda
-      band(0, CRYPT_Y0, COLS - 1, CRYPT_Y0 + 1); // topo
-      band(0, ROWS - 2, COLS - 1, ROWS - 1); // base
-      band(0, CRYPT_Y0, 1, ROWS - 1); // esquerda
-      band(COLS - 2, CRYPT_Y0, COLS - 1, ROWS - 1); // direita
-
-      // ---- OBJETOS (móveis/árvores/sarcófagos) — colisão invisível medida na arte ----
-      // PRAIA: TRONCO das palmeiras (a copa NÃO colide — passa por baixo, ver painted_canopy);
-      // guarda-sóis, espreguiçadeira, caixas/barris e pedras grandes.
-      band(23, 5, 24, 6); // palmeira esq (tronco)
-      band(26, 5, 28, 6); // palmeira dir (tronco) + barril
-      band(10, 3, 11, 5); // guarda-sol listrado (haste/base)
-      band(7, 5, 9, 6); // espreguiçadeira
-      band(27, 11, 28, 13); // guarda-sol + mesinha (inferior-dir)
-      band(7, 16, 9, 16); // caixa + barril (inferior)
-      band(23, 16, 24, 16); // caixa (inferior-dir)
-      // ESCRITORIO: móveis fora das paredes (o resto já está atrás da parede de 2 tiles / salas)
-      band(4, OY + 4, 6, OY + 5); // mesa de trabalho (topo-esq)
-      band(2, OY + 6, 3, OY + 13); // lareira + barris (esq)
-      band(26, OY + 4, 27, OY + 18); // faixa de móveis do corredor direito
-      // CRIPTA: cristal central + sarcófagos espalhados
-      band(14, CRYPT_Y0 + 8, 15, CRYPT_Y0 + 10); // cristal/altar central
-      band(8, CRYPT_Y0 + 2, 11, CRYPT_Y0 + 4); // sarcófago topo-esq
-      band(20, CRYPT_Y0 + 3, 24, CRYPT_Y0 + 5); // sarcófago topo-dir
-      band(2, CRYPT_Y0 + 6, 4, CRYPT_Y0 + 8); // sarcófago esq
-      band(25, CRYPT_Y0 + 6, 27, CRYPT_Y0 + 9); // sarcófago dir-cima
-      band(25, CRYPT_Y0 + 11, 27, CRYPT_Y0 + 13); // sarcófago dir-baixo
-      band(6, CRYPT_Y0 + 13, 9, CRYPT_Y0 + 15); // sarcófago baixo-esq
-      band(12, CRYPT_Y0 + 14, 16, CRYPT_Y0 + 16); // sarcófago baixo-centro
+      apply(COLLISION.beach, 0);
+      apply(COLLISION.office, OY);
+      apply(COLLISION.crypt, CRYPT_Y0);
     }
 
     // ---- objetos por andar (visibilidade alternada; tudo na lista da cena) ----
@@ -405,12 +373,8 @@ export class OfficeScene extends Phaser.Scene {
         this.add.image(0, OY * T, "painted_office").setOrigin(0, 0).setDepth(0);
         this.addStaircase(16, OY + 5, true, "▲ Praia", 16, 13); // sobe pra praia (dentro da sala, longe da parede)
         this.addStaircase(16, OY + 17, false, "▼ Cripta", 16, 42); // desce pra cripta
-        // 3 salas de reunião: a PAREDE é pintada no fundo (nano banana); aqui só a colisão
-        // invisível casada com as vigas + a porta (vão de 2 tiles) voltada pro centro.
-        // Coords medidas na arte nova (cn_blue/red/gold). Interior = bolha de áudio.
-        this.addMeetingRoom(walls, 5, OY + 13, 11, OY + 19, "right", OY + 15); // azul (baixo-esq)
-        this.addMeetingRoom(walls, 18, OY + 6, 25, OY + 12, "left", OY + 8); // vermelha (cima-dir)
-        this.addMeetingRoom(walls, 18, OY + 13, 25, OY + 19, "left", OY + 15); // dourada (baixo-dir)
+        // As paredes das 3 salas de reunião (com porta) já vêm na colisão detectada por pixel
+        // (COLLISION.office). Aqui só os rótulos; interior = bolha de áudio (MEETING_ZONES).
         this.addRoomLabel("🗣️ Reunião", 8 * T, (OY + 16) * T);
         this.addRoomLabel("🗣️ Reunião", 21.5 * T, (OY + 9) * T);
         this.addRoomLabel("🗣️ Reunião", 21.5 * T, (OY + 16) * T);
@@ -2971,44 +2935,6 @@ export class OfficeScene extends Phaser.Scene {
       }
     }
     if (!on) this.stairLatch = false;
-  }
-
-  /**
-   * Sala de reunião do escritório pintado: paredes de pedra VISÍVEIS + colisão, com uma porta
-   * (vão de 2 tiles) voltada pro centro — assim dá pra ver quem está dentro/fora. Coords em
-   * TILES do mundo (retângulo c1,r1..c2,r2 inclusive). `side`+`door` = onde fica o vão (2 tiles
-   * a partir de `door`). As paredes entram no grupo `walls` (colidem) e, por serem criadas dentro
-   * do buildFloorInto(1), ficam só no andar do escritório.
-   */
-  private addMeetingRoom(
-    walls: Phaser.Physics.Arcade.StaticGroup,
-    c1: number,
-    r1: number,
-    c2: number,
-    r2: number,
-    doorSide: "top" | "right" | "bottom" | "left",
-    doorAt: number,
-  ) {
-    // A parede é PINTADA no fundo do escritório (nano banana); aqui só colocamos a colisão
-    // INVISÍVEL casada com as vigas pintadas, deixando um vão de 2 tiles pra porta.
-    const gap = (s: "top" | "right" | "bottom" | "left", n: number) =>
-      doorSide === s && n >= doorAt && n <= doorAt + 1;
-    const put = (c: number, r: number) => {
-      const w = walls.create(
-        c * T + T / 2,
-        r * T + T / 2,
-        "wall",
-      ) as Phaser.Physics.Arcade.Sprite;
-      w.setAlpha(0).setDepth(1); // invisível, só física
-    };
-    for (let c = c1; c <= c2; c++) {
-      if (!gap("top", c)) put(c, r1);
-      if (!gap("bottom", c)) put(c, r2);
-    }
-    for (let r = r1 + 1; r <= r2 - 1; r++) {
-      if (!gap("left", r)) put(c1, r);
-      if (!gap("right", r)) put(c2, r);
-    }
   }
 
   /** Desenha uma escada e registra a zona que leva ao andar vizinho. */
