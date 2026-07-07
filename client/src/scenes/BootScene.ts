@@ -80,6 +80,9 @@ export class BootScene extends Phaser.Scene {
     this.load.image("painted_beach", "assets/painted/beach.png");
     this.load.image("painted_office", "assets/painted/office.png");
     this.load.image("painted_crypt", "assets/painted/crypt.png");
+    // Copa das palmeiras da praia (só as folhas, fundo transparente): overlay ACIMA do
+    // personagem, pra ele passar POR BAIXO das folhas (o tronco colide; a copa não).
+    this.load.image("painted_canopy", "assets/painted/canopy.png");
 
     // Personagens (LPC, CC-BY-SA) — sheets 9x4 de 64px (caminhada nas 4 direcoes)
     CHARACTERS.forEach((c) =>

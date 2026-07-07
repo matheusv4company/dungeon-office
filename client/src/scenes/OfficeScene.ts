@@ -46,9 +46,9 @@ const VOICE_STALE_MS = 1500; // sem update de posicao ha mais que isso: nao conf
 // fica colado em qualquer parede continua dentro da bolha, e nada vaza pro lado de fora.
 // Zonas de reunião (bolhas de áudio isoladas) — interior de cada sala PINTADA do escritório.
 const MEETING_ZONES = [
-  { x1: 6 * T, y1: (OY + 14) * T, x2: 11 * T, y2: (OY + 19) * T }, // sala azul (baixo-esq) — interior
-  { x1: 19 * T, y1: (OY + 7) * T, x2: 25 * T, y2: (OY + 12) * T }, // sala vermelha (cima-dir) — interior
-  { x1: 19 * T, y1: (OY + 14) * T, x2: 25 * T, y2: (OY + 19) * T }, // sala dourada (baixo-dir) — interior
+  { x1: 5 * T, y1: (OY + 13) * T, x2: 12 * T, y2: (OY + 20) * T }, // sala azul (baixo-esq) — parede a parede
+  { x1: 18 * T, y1: (OY + 6) * T, x2: 26 * T, y2: (OY + 12) * T }, // sala vermelha (cima-dir) — parede a parede
+  { x1: 18 * T, y1: (OY + 13) * T, x2: 26 * T, y2: (OY + 20) * T }, // sala dourada (baixo-dir) — parede a parede
 ];
 function zoneAt(x: number, y: number): number {
   for (let i = 0; i < MEETING_ZONES.length; i++) {
@@ -85,6 +85,7 @@ type Remote = {
   hand: Phaser.GameObjects.Text;
   hpBg: Phaser.GameObjects.Rectangle;
   hpFill: Phaser.GameObjects.Rectangle;
+  body: Phaser.GameObjects.Rectangle; // corpo físico invisível (colisão com o player local)
   hp: number;
   dmgAt: number; // quando levou dano por ultimo (ms da cena); 0 = nunca
   name: string; // nome-base (sem o título de cosmético), pra recompor o label
@@ -115,6 +116,7 @@ export class OfficeScene extends Phaser.Scene {
   // multiplayer
   private room?: Room;
   private remotes = new Map<string, Remote>();
+  private remoteBodies?: Phaser.Physics.Arcade.Group; // corpos de colisão dos remotos (personagem↔personagem)
   private lastSent = 0;
   private lastDir = 0;
 
@@ -333,6 +335,30 @@ export class OfficeScene extends Phaser.Scene {
       band(0, ROWS - 2, COLS - 1, ROWS - 1); // base
       band(0, CRYPT_Y0, 1, ROWS - 1); // esquerda
       band(COLS - 2, CRYPT_Y0, COLS - 1, ROWS - 1); // direita
+
+      // ---- OBJETOS (móveis/árvores/sarcófagos) — colisão invisível medida na arte ----
+      // PRAIA: TRONCO das palmeiras (a copa NÃO colide — passa por baixo, ver painted_canopy);
+      // guarda-sóis, espreguiçadeira, caixas/barris e pedras grandes.
+      band(23, 5, 24, 6); // palmeira esq (tronco)
+      band(26, 5, 28, 6); // palmeira dir (tronco) + barril
+      band(10, 3, 11, 5); // guarda-sol listrado (haste/base)
+      band(7, 5, 9, 6); // espreguiçadeira
+      band(27, 11, 28, 13); // guarda-sol + mesinha (inferior-dir)
+      band(7, 16, 9, 16); // caixa + barril (inferior)
+      band(23, 16, 24, 16); // caixa (inferior-dir)
+      // ESCRITORIO: móveis fora das paredes (o resto já está atrás da parede de 2 tiles / salas)
+      band(4, OY + 4, 6, OY + 5); // mesa de trabalho (topo-esq)
+      band(2, OY + 6, 3, OY + 13); // lareira + barris (esq)
+      band(26, OY + 4, 27, OY + 18); // faixa de móveis do corredor direito
+      // CRIPTA: cristal central + sarcófagos espalhados
+      band(14, CRYPT_Y0 + 8, 15, CRYPT_Y0 + 10); // cristal/altar central
+      band(8, CRYPT_Y0 + 2, 11, CRYPT_Y0 + 4); // sarcófago topo-esq
+      band(20, CRYPT_Y0 + 3, 24, CRYPT_Y0 + 5); // sarcófago topo-dir
+      band(2, CRYPT_Y0 + 6, 4, CRYPT_Y0 + 8); // sarcófago esq
+      band(25, CRYPT_Y0 + 6, 27, CRYPT_Y0 + 9); // sarcófago dir-cima
+      band(25, CRYPT_Y0 + 11, 27, CRYPT_Y0 + 13); // sarcófago dir-baixo
+      band(6, CRYPT_Y0 + 13, 9, CRYPT_Y0 + 15); // sarcófago baixo-esq
+      band(12, CRYPT_Y0 + 14, 16, CRYPT_Y0 + 16); // sarcófago baixo-centro
     }
 
     // ---- objetos por andar (visibilidade alternada; tudo na lista da cena) ----
@@ -364,6 +390,9 @@ export class OfficeScene extends Phaser.Scene {
     this.buildFloorInto(0, () => {
       if (this.paintedMap) {
         this.add.image(0, 0, "painted_beach").setOrigin(0, 0).setDepth(0);
+        // copa das palmeiras por CIMA do personagem (depth 9000 > jogador, < UI 10000):
+        // o tronco tem colisão; a copa não, e o personagem some atrás das folhas.
+        this.add.image(0, 0, "painted_canopy").setOrigin(0, 0).setDepth(9000);
         this.addStaircase(16, 14, false, "▼ Escritório", 16, 23); // chega no piso, abaixo da parede norte
       } else {
         this.add.tileSprite(0, 0, W, OY * T, "sand1").setOrigin(0).setDepth(0);
@@ -418,6 +447,9 @@ export class OfficeScene extends Phaser.Scene {
     this.player.setSize(16, 12).setOffset(24, 46);
     this.physics.add.collider(this.player, walls);
     this.physics.add.collider(this.player, this.obstacles);
+    // colisão personagem↔personagem: cada remoto tem um corpo imóvel (ver addRemote)
+    this.remoteBodies = this.physics.add.group();
+    this.physics.add.collider(this.player, this.remoteBodies);
 
     this.nameLabel = this.add
       .text(spawnX, spawnY - 30, sel.name || "Convidado", {
@@ -871,8 +903,17 @@ export class OfficeScene extends Phaser.Scene {
     label.on("pointerover", () => label.setColor("#ffd34d"));
     label.on("pointerout", () => label.setColor("#ffe9b0"));
     label.on("pointerdown", () => this.callPlayer(sessionId));
+    // corpo de colisão invisível nos PÉS do remoto (imóvel; a posição é seguida no update).
+    // Faz o player local esbarrar em quem está por perto (personagem↔personagem).
+    const body = this.add.rectangle(player.x, player.y + 18, 22, 14).setVisible(false);
+    this.remoteBodies?.add(body);
+    const bb = body.body as Phaser.Physics.Arcade.Body | null;
+    if (bb) {
+      bb.setImmovable(true);
+      bb.moves = false; // não é movido pela física; teleportado no update pra seguir o sprite
+    }
     // remotos sao mundo: a camera do HUD nao deve desenha-los
-    this.uiCam?.ignore([sprite, label, ring, hand, hpBg, hpFill]);
+    this.uiCam?.ignore([sprite, label, ring, hand, hpBg, hpFill, body]);
     this.remotes.set(sessionId, {
       sprite,
       label,
@@ -880,6 +921,7 @@ export class OfficeScene extends Phaser.Scene {
       hand,
       hpBg,
       hpFill,
+      body,
       hp: typeof player.hp === "number" ? player.hp : 100,
       dmgAt: 0,
       name: String(player.name ?? ""),
@@ -896,6 +938,7 @@ export class OfficeScene extends Phaser.Scene {
       r.hand.destroy();
       r.hpBg.destroy();
       r.hpFill.destroy();
+      r.body.destroy();
       this.remotes.delete(sessionId);
     }
   }
@@ -3163,6 +3206,8 @@ export class OfficeScene extends Phaser.Scene {
         r.sprite.x += (p.x - r.sprite.x) * 0.25;
         r.sprite.y += (p.y - r.sprite.y) * 0.25;
         r.sprite.setDepth(r.sprite.y).setVisible(vis);
+        // corpo de colisão segue os pés do remoto (teleporta; imóvel)
+        (r.body.body as Phaser.Physics.Arcade.Body | null)?.reset(r.sprite.x, r.sprite.y + 18);
         const dn = DIR_NAME[p.dir] ?? "down";
         if (p.moving) r.sprite.anims.play(`c${p.charId}_${dn}`, true);
         else {
