@@ -891,6 +891,15 @@ export class KanbanBoard {
     return new Promise((resolve) => {
       const bg = document.createElement("div");
       bg.className = "kb-modal-bg open"; // z-index 10052, acima do overlay do board
+      // Esc com o foco em QUALQUER filho (input, OK, Cancelar via Tab) cancela SÓ o
+      // prompt — sem borbulhar pro onKeydown global, que fecharia o modal de baixo.
+      bg.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Escape") {
+          e.preventDefault();
+          done(null);
+        }
+      });
       const m = document.createElement("div");
       m.className = "kb-modal";
       m.onclick = (e) => e.stopPropagation();
@@ -1445,6 +1454,7 @@ export class KanbanBoard {
   }
 
   destroy() {
+    this.closeModal(); // remove também o listener de paste do F4 (destruição no reconnect)
     document.removeEventListener("keydown", this.onKeydown);
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);

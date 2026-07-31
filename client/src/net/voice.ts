@@ -62,9 +62,11 @@ export class VoiceManager {
     if (!nonce) throw new Error("nonce da voz ainda não chegou — tente de novo");
     // O /token NÃO aceita identidade escolhida pelo cliente: o nonce (emitido pelo
     // servidor, atado à sessão Colyseus) é quem determina a identidade no LiveKit.
-    const resp = await fetch(
-      `${SERVER_HTTP_URL}/token?nonce=${encodeURIComponent(nonce)}&name=${encodeURIComponent(displayName)}`,
-    );
+    // Vai por HEADER, não por query — URL cai em access log de proxy (regra da casa:
+    // nada de credencial em log).
+    const resp = await fetch(`${SERVER_HTTP_URL}/token?name=${encodeURIComponent(displayName)}`, {
+      headers: { "X-Voice-Nonce": nonce },
+    });
     if (!resp.ok) throw new Error(`token HTTP ${resp.status}`);
     const data = (await resp.json()) as { token?: string; url?: string; error?: string };
     if (!data.token || !data.url) throw new Error(data.error ?? "token/url ausente");
@@ -126,6 +128,13 @@ export class VoiceManager {
 
     // reconexão do LiveKit (rede piscou): o servidor precisa re-aplicar as assinaturas
     room.on(RoomEvent.Reconnected, () => this.onReady?.());
+    // queda de verdade: derruba as flags NA HORA (a cena lê connected/micEnabled pra
+    // decidir coisas como o escriba — não podem ficar stale-true; review final)
+    room.on(RoomEvent.Disconnected, () => {
+      this.connected = false;
+      this.micEnabled = false;
+      this.sharing = false;
+    });
 
     await room.connect(data.url, data.token);
     this.room = room;

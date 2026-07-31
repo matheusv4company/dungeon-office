@@ -23,11 +23,26 @@ export async function summarizeMeeting(utterances: Utterance[]): Promise<Ata | n
   try {
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
     const client = new Anthropic({ apiKey });
+    // teto de contexto: mantém o FIM (decisões/tarefas concentram no final da reunião)
     const transcript = utterances
       .map((u) => `${u.who}: ${u.text}`)
       .join("\n")
-      .slice(0, 60_000); // teto de contexto (reunião muito longa é truncada do início... do fim não)
+      .slice(-60_000);
+    // âncora temporal no fuso do time: sem isso, "amanhã"/"sexta que vem" viram data
+    // ALUCINADA pelo modelo (contra a regra da casa de nunca inventar premissa)
+    const agora = new Date();
+    const hojeISO = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(agora);
+    const diaSemana = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      weekday: "long",
+    }).format(agora);
     const system =
+      `HOJE e ${diaSemana}, ${hojeISO} (fuso America/Sao_Paulo). Use isso pra resolver prazos relativos ("amanha", "sexta"). ` +
       "Voce e a secretaria de atas de uma agencia de marketing brasileira. Recebe a transcricao " +
       "automatica (imperfeita) de uma reuniao por voz do time. Produza APENAS um JSON valido:\n" +
       '{"resumo": "resumo fiel em 3-6 frases", "decisoes": ["decisao tomada", ...], ' +
@@ -49,9 +64,9 @@ export async function summarizeMeeting(utterances: Utterance[]): Promise<Ata | n
       .map((b) => (b.type === "text" ? b.text : ""))
       .join("")
       .trim();
-    const m = text.match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    const obj = JSON.parse(m[0]) as Partial<Ata>;
+    const json = extractJson(text);
+    if (!json) return null;
+    const obj = JSON.parse(json) as Partial<Ata>;
     const tarefas = (Array.isArray(obj.tarefas) ? obj.tarefas : [])
       .map((t) => ({
         titulo: String((t as AtaTarefa)?.titulo ?? "").trim().slice(0, 180),
@@ -70,6 +85,41 @@ export async function summarizeMeeting(utterances: Utterance[]): Promise<Ata | n
   }
 }
 
+/**
+ * Extrai o PRIMEIRO objeto JSON balanceado do texto (respeitando strings/escapes).
+ * A regex gulosa antiga podia casar lixo entre duas chaves e quebrar o parse com
+ * texto adversarial vindo da transcrição (review V2).
+ */
+function extractJson(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (ch === "\\") {
+      if (inStr) esc = true;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 // ---- log das atas (auditoria) — mesmo volume/padrão atômico do board ----
 const DIR = process.env.BOARD_DIR || path.join(process.cwd(), "data");
 const FILE = path.join(DIR, "meetings.json");
@@ -80,7 +130,9 @@ export type MeetingLogEntry = {
   zone: number;
   speakers: string[];
   utterances: number;
-  ata: Ata;
+  /** null = o resumo falhou (IA fora/timeout) — nesse caso `raw` preserva o transcript. */
+  ata: Ata | null;
+  raw?: Utterance[]; // transcript bruto, gravado SÓ quando a ata falhou (nada se perde)
 };
 
 /** Anexa uma ata ao log (escrita atômica; falha só loga — ata já foi pro board). */

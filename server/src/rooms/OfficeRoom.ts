@@ -79,6 +79,7 @@ export class OfficeRoom extends Room<OfficeState> {
   private lkRefreshing = false; // single-flight do refreshLkSids
   private lkDirty = false; // pedido de refresh chegou durante um refresh em voo
   private voiceReadyAt = new Map<string, number>(); // throttle do voice:ready por sessão
+  private voiceReadyPending = new Set<string>(); // voice:ready coalescido pro fim da janela
   private emoteAt = new Map<string, number>(); // F7: último emote por cliente (rate limit)
   // ---- F8: transcrição de reuniões ----
   private scribe = new MeetingScribe();
@@ -347,7 +348,16 @@ export class OfficeRoom extends Room<OfficeState> {
       t.createdAt = Date.now();
       this.markColumn(t, src.col);
       t.col = src.col;
-      t.order = src.order + 0.5; // logo abaixo do original (order fracionário ordena asc)
+      // cópia em "travado" precisa do motivo (o chip do cliente lê blockReason; o prompt
+      // de motivo só roda no task:move) — herda o do original
+      if (src.col === "travado") t.blockReason = src.blockReason;
+      // posiciona ESTRITAMENTE entre o original e o próximo card da coluna (ponto médio;
+      // +0.5 fixo colidia com o vizinho de order inteiro e duplicar 2x empatava)
+      let nextOrder = Infinity;
+      this.state.tasks.forEach((x) => {
+        if (x.col === src.col && x.order > src.order && x.order < nextOrder) nextOrder = x.order;
+      });
+      t.order = nextOrder === Infinity ? src.order + 1 : (src.order + nextOrder) / 2;
       this.state.tasks.set(t.id, t);
       this.persistBoard();
     });
@@ -362,10 +372,11 @@ export class OfficeRoom extends Room<OfficeState> {
         client,
         msg: { id?: string; proof?: string; note?: string; format?: string; image?: string; imageType?: string },
       ) => {
-        if (!getFlags().gate) return; // feature desligada -> no-op
         // F4 (V2): NENHUMA rejeicao e mais silenciosa — toda falha responde o MOTIVO
-        // pro autor ("clicei e nada aconteceu" nunca mais).
+        // pro autor ("clicei e nada aconteceu" nunca mais). Inclusive flag desligado
+        // (o cliente pode ter caido no default tudo-on se o /config falhou no boot).
         const fail = (reason: string) => client.send("task:deliverError", { reason });
+        if (!getFlags().gate) return fail("A entrega ao cliente está desativada no servidor no momento.");
         const t = this.state.tasks.get(String(msg?.id ?? ""));
         if (!t || t.col !== "feito") return fail("A tarefa precisa estar na coluna Feito pra ser entregue.");
         if (t.delivered) return fail("Essa tarefa já foi entregue. Use Devolver antes de reentregar.");
@@ -654,14 +665,22 @@ export class OfficeRoom extends Room<OfficeState> {
       // full-reconnect do LiveKit o autoSubscribe re-assina tudo, mas o appliedSubs
       // ainda dizia "false" — sem purgar, o motor nunca re-desassinaria (review V2).
       this.onMessage("voice:ready", (client) => {
+        // throttle com COALESCING (não descarta): o fluxo normal do botão manda 2
+        // voice:ready em ~200ms (connect + setMicEnabled) — o segundo é agendado pro
+        // fim da janela em vez de engolido (review final).
+        const sid = client.sessionId;
         const now = Date.now();
-        if (now - (this.voiceReadyAt.get(client.sessionId) ?? 0) < 1000) return;
-        this.voiceReadyAt.set(client.sessionId, now);
-        const prefix = `${client.sessionId}>`;
-        for (const key of [...this.appliedSubs.keys()]) {
-          if (key.startsWith(prefix)) this.appliedSubs.delete(key);
+        if (now - (this.voiceReadyAt.get(sid) ?? 0) < 1000) {
+          if (!this.voiceReadyPending.has(sid)) {
+            this.voiceReadyPending.add(sid);
+            this.clock.setTimeout(() => {
+              this.voiceReadyPending.delete(sid);
+              this.voiceReadyBody(sid);
+            }, 1100);
+          }
+          return;
         }
-        void this.refreshLkSids();
+        this.voiceReadyBody(sid);
       });
       this.clock.setInterval(() => this.audTick(), 300);
       this.clock.setInterval(() => void this.refreshLkSids(), 4000);
@@ -683,10 +702,15 @@ export class OfficeRoom extends Room<OfficeState> {
 
   // ---------- F8: transcrição — ciclo de sessões e geração da ata ----------
 
-  /** A cada 1s: conta gente por zona, abre/fecha sessões; sessão fechada vira ata. */
+  /**
+   * A cada 1s: conta MEMBROS por zona (convidado não alimenta a ata, então também não
+   * abre nem prende sessão — senão um visitante AFK travava a reunião pra sempre),
+   * abre/fecha sessões; sessão fechada vira ata.
+   */
   private scribeTick(): void {
     const counts = new Map<number, number>();
     this.state.players.forEach((p) => {
+      if (!p.memberId) return; // só membro logado conta pro ciclo da sessão
       const z = zoneAt(p.x, p.y);
       if (z >= 0) counts.set(z, (counts.get(z) ?? 0) + 1);
     });
@@ -698,11 +722,27 @@ export class OfficeRoom extends Room<OfficeState> {
     const words = s.utterances.reduce((n, u) => n + u.text.split(/\s+/).length, 0);
     if (words < 30) return; // conversa curta/ruído — sem ata
     const ata = await summarizeMeeting(s.utterances);
-    if (!ata || !ata.resumo) return; // IA fora ou "não era reunião de trabalho"
+    if (!ata) {
+      // IA fora/timeout: NUNCA descarta o transcript — grava o bruto no log pra
+      // recuperar depois (e avisa no log do servidor).
+      appendMeetingLog({
+        startedAt: s.startedAt,
+        endedAt: Date.now(),
+        zone: s.zone,
+        speakers: [...s.speakers],
+        utterances: s.utterances.length,
+        ata: null,
+        raw: s.utterances,
+      });
+      console.warn("[scribe] resumo falhou — transcript bruto preservado em meetings.json");
+      return;
+    }
+    if (!ata.resumo) return; // a IA disse "não era reunião de trabalho" — sem ata mesmo
     const ZONE_NAMES = ["azul", "vermelha", "dourada"];
-    const d = new Date();
-    const dd = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
-    const hh = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    // datas no fuso do TIME (o servidor roda em UTC no Coolify)
+    const agora = new Date();
+    const dd = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" }).format(agora);
+    const hh = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" }).format(agora);
     const desc = [
       `Sala ${ZONE_NAMES[s.zone] ?? s.zone} · participantes: ${[...s.speakers].join(", ") || "—"}`,
       "",
@@ -761,6 +801,16 @@ export class OfficeRoom extends Room<OfficeState> {
   }
 
   // ---------- F1: audibilidade — tick, eventos de proximidade e reconciliação ----------
+
+  /** Corpo do voice:ready: purga o lado OUVINTE do cache aplicado + ressincroniza. */
+  private voiceReadyBody(sid: string): void {
+    this.voiceReadyAt.set(sid, Date.now());
+    const prefix = `${sid}>`;
+    for (const key of [...this.appliedSubs.keys()]) {
+      if (key.startsWith(prefix)) this.appliedSubs.delete(key);
+    }
+    void this.refreshLkSids();
+  }
 
   /** Recomputa pares audíveis (300ms) e dispara eventos + reconciliação de assinaturas. */
   private audTick(): void {
@@ -827,7 +877,23 @@ export class OfficeRoom extends Room<OfficeState> {
             }
           }
         }
+        // transição de VOZ (ligou/desligou o mic): quem já está no alcance recebe o
+        // chime agora — antes só transição de PROXIMIDADE gerava evento (review final).
+        const voiceChanged: Array<{ id: string; on: boolean }> = [];
+        for (const id of new Set([...this.lkSids.keys(), ...map.keys()])) {
+          const was = (this.lkSids.get(id)?.sids.length ?? 0) > 0;
+          const is = (map.get(id)?.sids.length ?? 0) > 0;
+          if (was !== is) voiceChanged.push({ id, on: is });
+        }
         this.lkSids = map;
+        for (const { id, on } of voiceChanged) {
+          const name = this.state.players.get(id)?.name ?? "";
+          for (const c of this.clients) {
+            if (c.sessionId !== id && this.aud.isAudible(id, c.sessionId)) {
+              c.send(on ? "prox:enter" : "prox:leave", { sid: id, name });
+            }
+          }
+        }
         this.reconcileSubs();
       } while (this.lkDirty);
     } finally {
@@ -865,14 +931,20 @@ export class OfficeRoom extends Room<OfficeState> {
       flight.next = desired; // já tem chamada em voo: só atualiza a intenção
       return;
     }
-    const sids = this.lkSids.get(speaker)?.sids ?? [];
+    const audio = this.lkSids.get(speaker);
+    const sids = audio?.sids ?? [];
     if (sids.length === 0) return;
+    const sigAtLaunch = audio!.sig; // guarda: se o speaker republicar durante o voo...
     this.subFlight.set(key, {});
     void this.lkSubs.apply(listener, sids, desired).then((ok) => {
       const f = this.subFlight.get(key);
       this.subFlight.delete(key);
       if (!ok) return; // re-tentado pelo reconcile do próximo tick (300ms)
-      this.appliedSubs.set(key, desired);
+      // ...NÃO gravamos estado aplicado sobre SIDs que já não existem — o reconcile
+      // re-aplica com os novos (review final).
+      if ((this.lkSids.get(speaker)?.sig ?? "") === sigAtLaunch) {
+        this.appliedSubs.set(key, desired);
+      }
       // intenção mais nova durante o voo? (ou o motor já mudou de ideia) -> encadeia
       const cur = this.aud.isAudible(listener, speaker);
       const next = f?.next !== undefined ? f.next : cur;
@@ -1237,7 +1309,19 @@ export class OfficeRoom extends Room<OfficeState> {
     console.log(`[OfficeRoom] saiu: ${sid}`);
   }
 
-  onDispose() {
+  async onDispose() {
+    // F8: a sala Colyseus tem autoDispose — quando TODOS desconectam no fim da reunião,
+    // o clock morre antes do grace de 60s e as sessões abertas sumiriam com o transcript.
+    // Drena e fecha cada uma AQUI (o Colyseus aguarda a promise do onDispose, inclusive
+    // no SIGTERM do redeploy) ANTES dos flushes, pra ata/tarefas entrarem no board.
+    const pending = this.scribe.drain();
+    for (const s of pending) {
+      try {
+        await this.finishMeeting(s);
+      } catch (e) {
+        console.error("[scribe] falha ao fechar sessão no dispose:", (e as Error)?.message ?? e);
+      }
+    }
     // grava na hora qualquer edicao pendente no debounce antes da sala morrer.
     // No redeploy do Coolify (SIGTERM) o Colyseus faz shutdown gracioso e chama
     // onDispose — sem isso as ultimas alteracoes do board se perderiam.

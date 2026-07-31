@@ -30,9 +30,14 @@ const voiceReady = !!(LK_URL && LK_KEY && LK_SECRET);
 
 const app = express();
 app.use(express.json());
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Headers", "Content-Type");
+  res.header("Access-Control-Allow-Headers", "Content-Type, X-Voice-Nonce");
+  // preflight do header customizado (X-Voice-Nonce dispara OPTIONS no navegador)
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
   next();
 });
 
@@ -65,7 +70,8 @@ app.get("/token", async (req, res) => {
   // Hardening (review V2): o cliente NÃO escolhe a identidade — o nonce (emitido pelo
   // OfficeRoom e atado à sessão Colyseus) resolve pra identidade real. Sem isso,
   // qualquer um mintava token com o sessionId alheio e herdava as assinaturas de áudio.
-  const nonce = String(req.query.nonce ?? "");
+  // nonce vem por HEADER (não por query: URL cai em access log de proxy)
+  const nonce = String(req.headers["x-voice-nonce"] ?? "");
   const identity = resolveVoiceNonce(nonce);
   if (!identity) {
     res.status(403).json({ error: "nonce de voz inválido — recarregue o escritório" });

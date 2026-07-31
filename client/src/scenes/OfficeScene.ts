@@ -137,6 +137,9 @@ export class OfficeScene extends Phaser.Scene {
   private scribePaused = false; // pausa PESSOAL da transcrição (botão no badge)
   private scribeBadge?: HTMLDivElement;
   private lastScribeEval = 0; // throttle da elegibilidade (~600ms)
+  private scribeOutbox = ""; // falas aguardando envio (espaçado — anti-flood do servidor)
+  private scribeSentAt = 0;
+  private scribeFlushT?: number;
   private lastSent = 0;
   private lastDir = 0;
 
@@ -293,6 +296,11 @@ export class OfficeScene extends Phaser.Scene {
     this.scribeBadge?.remove();
     this.scribeBadge = undefined;
     this.scribePaused = false;
+    if (this.scribeFlushT !== undefined) {
+      window.clearTimeout(this.scribeFlushT);
+      this.scribeFlushT = undefined;
+    }
+    this.scribeOutbox = "";
     this.vault?.destroy();
     this.vault = undefined;
     this.vaultBtn = undefined;
@@ -616,6 +624,9 @@ export class OfficeScene extends Phaser.Scene {
     room.onMessage("voice:nonce", (m: { nonce?: string }) => {
       if (this.room !== room) return;
       this.voiceNonce = String(m?.nonce ?? "");
+      // reparo dirigido por EVENTO (não só pelo loop de espera): se a voz ficou com
+      // identidade morta esperando o nonce, conserta agora (review final)
+      this.fixVoiceIdentity();
     });
     room.send("voice:nonce?");
     // Se a voz ja estava ligada e o sessionId mudou (reconexao), reconecta a voz
@@ -1661,7 +1672,9 @@ export class OfficeScene extends Phaser.Scene {
     const t = document.createElement("div");
     t.textContent = text;
     t.style.cssText =
-      "position:fixed;left:50%;bottom:84px;transform:translateX(-50%);z-index:9999;" +
+      // z-index ACIMA do kanban (10000) e dos modais (10052): o toast de erro de entrega
+      // aparece com o board aberto — que é exatamente onde a entrega acontece (review final)
+      "position:fixed;left:50%;bottom:84px;transform:translateX(-50%);z-index:10090;" +
       `background:${bg};color:#fff;font:14px monospace;padding:8px 14px;border-radius:8px;` +
       "box-shadow:0 6px 24px #000a;pointer-events:none;";
     document.body.appendChild(t);
@@ -3109,13 +3122,9 @@ export class OfficeScene extends Phaser.Scene {
     }
     if (!this.scribe) {
       this.scribe = new SpeechScribe();
-      this.scribe.onText = (t) => {
-        try {
-          this.room?.send("meeting:say", { text: t });
-        } catch {
-          /* sala reconectando — a fala se perde, aceitável */
-        }
-      };
+      // fila de saída: o servidor tem anti-flood de 700ms — envios em rajada seriam
+      // DESCARTADOS lá. Aqui a gente espaça (~800ms) e concatena o que acumular.
+      this.scribe.onText = (t) => this.queueScribeText(t);
     }
     const inZone = myZone >= 0;
     const isMember = !!loadMember()?.memberId;
@@ -3127,6 +3136,25 @@ export class OfficeScene extends Phaser.Scene {
     else if (this.scribePaused) this.updateScribeBadge("paused");
     else if (!micOn) this.updateScribeBadge("nomic");
     else this.updateScribeBadge("on");
+  }
+
+  /** Enfileira texto transcrito e envia espaçado (≥800ms), concatenando o acumulado. */
+  private queueScribeText(t: string): void {
+    this.scribeOutbox = this.scribeOutbox ? `${this.scribeOutbox} ${t}` : t;
+    if (this.scribeFlushT !== undefined) return;
+    const wait = Math.max(0, 800 - (performance.now() - this.scribeSentAt));
+    this.scribeFlushT = window.setTimeout(() => {
+      this.scribeFlushT = undefined;
+      const text = this.scribeOutbox.slice(0, 500);
+      this.scribeOutbox = this.scribeOutbox.slice(500); // resto (raro) vai no próximo ciclo
+      this.scribeSentAt = performance.now();
+      try {
+        this.room?.send("meeting:say", { text });
+      } catch {
+        /* sala reconectando — a fala se perde, aceitável */
+      }
+      if (this.scribeOutbox) this.queueScribeText(""); // agenda o excedente
+    }, wait);
   }
 
   private updateScribeBadge(state: "hidden" | "on" | "paused" | "nomic" | "unsupported"): void {
@@ -3163,8 +3191,10 @@ export class OfficeScene extends Phaser.Scene {
   private setupEmoteBar(): void {
     if (this.emoteBar || !getFlags().emotes) return;
     const bar = document.createElement("div");
+    // no touch, sobe pra não cobrir a zona de spawn do joystick (review final)
+    const bottom = this.isTouch ? "96px" : "12px";
     bar.style.cssText =
-      "position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:9000;" +
+      `position:fixed;bottom:${bottom};left:50%;transform:translateX(-50%);z-index:9000;` +
       "display:flex;gap:2px;background:#15131dcc;border:1px solid #3a3550;border-radius:22px;" +
       "padding:5px 9px;";
     for (const e of EMOTE_LIST) {
@@ -3228,6 +3258,10 @@ export class OfficeScene extends Phaser.Scene {
     const self = { x: this.player.x, y: this.player.y };
     const myZone = zoneAt(self.x, self.y);
     const now = performance.now();
+    // F8 (review final): o gate do ESCRIBA também roda aqui (caminho event-driven de
+    // 2º plano) — com a aba oculta o update() congela e a elegibilidade não pode
+    // congelar junto (ex.: voz caiu -> reconhecimento tem que parar).
+    this.evalScribe(myZone);
     // FIX (review V2): o share (video + AUDIO) e gated AQUI — recomputeVoiceProximity roda
     // nos caminhos event-driven (timer de 2o plano + updates do WS), nao so no rAF. Antes,
     // o mute do share-audio dependia do update() e congelava com a aba oculta (o exato
