@@ -317,6 +317,29 @@ export class OfficeRoom extends Room<OfficeState> {
       }
     });
 
+    // F6 (V2): duplicar card — clona o CONTEÚDO e reseta todo o ESTADO (a cópia nunca
+    // herda entrega/verificação/PE — senão duplicar viraria jeito de forjar crédito).
+    this.onMessage("task:duplicate", (_c, msg: { id?: string }) => {
+      const src = this.state.tasks.get(String(msg?.id ?? ""));
+      if (!src) return;
+      const t = new Task();
+      t.id = `t${Date.now().toString(36)}${(this.taskSeq++).toString(36)}`;
+      t.title = `${src.title} (cópia)`.slice(0, 200);
+      t.desc = src.desc;
+      t.assignee = src.assignee;
+      t.client = src.client;
+      t.due = src.due;
+      t.unit = src.unit;
+      t.size = src.size;
+      t.clientWeight = src.clientWeight;
+      t.createdAt = Date.now();
+      this.markColumn(t, src.col);
+      t.col = src.col;
+      t.order = src.order + 0.5; // logo abaixo do original (order fracionário ordena asc)
+      this.state.tasks.set(t.id, t);
+      this.persistBoard();
+    });
+
     // ---------- F2: gate de entrega (escrow — "Feito" sozinho NAO credita) ----------
 
     // Entregar ao cliente: exige prova (link). Carimba deliveredAt no SERVIDOR (anti-forja).

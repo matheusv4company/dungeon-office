@@ -1092,6 +1092,15 @@ export class KanbanBoard {
         this.closeModal();
       };
       actions.appendChild(del);
+      // F6 (V2): duplicar — cria uma cópia limpa (sem entrega/verificação) logo abaixo
+      const dup = document.createElement("button");
+      dup.className = "kb-btn close";
+      dup.textContent = "⧉ Duplicar";
+      dup.onclick = () => {
+        if (task) this.room.send("task:duplicate", { id: task.id });
+        this.closeModal();
+      };
+      actions.appendChild(dup);
     }
     const cancel = document.createElement("button");
     cancel.className = "kb-btn close";
