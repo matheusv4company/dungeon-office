@@ -28,9 +28,15 @@ export const AUD_ENTER = 200;
 export const AUD_EXIT = 260;
 
 // ---- geometria do mapa (ESPELHA client/src/scenes/OfficeScene.ts — manter em sincronia!) ----
+// Derivada com as MESMAS fórmulas do cliente (nada de número mágico solto) pra qualquer
+// divergência ficar evidente num diff lado a lado.
 const T = 32;
-const FLOOR1_Y = 17 * T; // OY*T = 544: acima é praia (andar 0)
-const FLOOR2_Y = 39 * T; // CRYPT_Y0*T = 1248: abaixo é cripta (andar 2)
+const BEACH_ROWS = 16;
+const OFFICE_ROWS = 22;
+const OY = BEACH_ROWS + 1; // 17 — 1ª linha do escritório
+const CRYPT_Y0 = OY + OFFICE_ROWS; // 39 — 1ª linha da cripta
+const FLOOR1_Y = OY * T; // 544: acima é praia (andar 0)
+const FLOOR2_Y = CRYPT_Y0 * T; // 1248: abaixo é cripta (andar 2)
 
 /** Andar de uma coordenada Y do mundo (0=praia, 1=escritório, 2=cripta). */
 export function floorOfY(y: number): number {
@@ -40,11 +46,15 @@ export function floorOfY(y: number): number {
 }
 
 // Zonas de reunião (px do mundo) — ESPELHA MEETING_ZONES do OfficeScene.ts.
-const OY = 17;
+// y2 = TOPO da parede sul ((OY+19)*T), NÃO a base: o ponto rastreado é o CENTRO do sprite
+// (~14-26px acima dos pés). Com y2 na base da parede, quem andava no CORREDOR público
+// colado nela tinha o centro dentro da zona e o motor ASSINAVA a reunião fechada pra ele
+// (vazamento CONFIRMADO no review V2). Interior segue 100% coberto: dentro, encostado na
+// parede, o centro fica ≥26px acima do topo dela.
 const ZONES = [
-  { x1: 5 * T, y1: (OY + 13) * T, x2: 12 * T, y2: (OY + 20) * T }, // sala azul
+  { x1: 5 * T, y1: (OY + 13) * T, x2: 12 * T, y2: (OY + 19) * T }, // sala azul
   { x1: 18 * T, y1: (OY + 6) * T, x2: 26 * T, y2: (OY + 12) * T }, // sala vermelha
-  { x1: 18 * T, y1: (OY + 13) * T, x2: 26 * T, y2: (OY + 20) * T }, // sala dourada
+  { x1: 18 * T, y1: (OY + 13) * T, x2: 26 * T, y2: (OY + 19) * T }, // sala dourada
 ];
 
 /** Índice da zona de reunião no ponto, ou -1 se fora de todas. */

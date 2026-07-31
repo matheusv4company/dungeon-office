@@ -27,6 +27,7 @@ import {
 } from "../vault/store";
 import { AudibilityEngine, type AudPoint } from "../voice/audibility";
 import { LkSubscriptions, type AudioSids } from "../voice/subscriptions";
+import { issueVoiceNonce, revokeVoiceNonce } from "../voice/nonces";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; authToken?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -72,6 +73,10 @@ export class OfficeRoom extends Room<OfficeState> {
   private lkSubs = new LkSubscriptions();
   private lkSids = new Map<string, AudioSids>(); // identity(sessionId) -> sids de áudio no LiveKit
   private appliedSubs = new Map<string, boolean>(); // "listener>speaker" -> último estado APLICADO
+  private subFlight = new Map<string, { next?: boolean }>(); // applies em voo (1 por par; guarda a intenção mais nova)
+  private lkRefreshing = false; // single-flight do refreshLkSids
+  private lkDirty = false; // pedido de refresh chegou durante um refresh em voo
+  private voiceReadyAt = new Map<string, number>(); // throttle do voice:ready por sessão
   private emoteAt = new Map<string, number>(); // F7: último emote por cliente (rate limit)
 
   async onCreate() {
@@ -610,9 +615,27 @@ export class OfficeRoom extends Room<OfficeState> {
     // ---------- F1: motor de audibilidade (fix definitivo do vazamento de voz) ----------
     // O servidor (dono das posições) decide quem RECEBE áudio de quem e força as
     // assinaturas no LiveKit. AUDIO_AUTH=0 desliga (volta ao fade-só-cliente).
+
+    // Nonce do /token (hardening): o cliente pede e recebe um nonce atado à PRÓPRIA
+    // sessão — identidade no LiveKit deixa de ser escolhida pelo cliente. SEMPRE
+    // registrado (a voz existe mesmo com AUDIO_AUTH=0).
+    this.onMessage("voice:nonce?", (client) => {
+      client.send("voice:nonce", { nonce: issueVoiceNonce(client.sessionId) });
+    });
+
     if (getFlags().audioAuth && this.lkSubs.ready()) {
-      // cliente avisa que (re)entrou na voz -> ressincroniza os SIDs + assinaturas
-      this.onMessage("voice:ready", (_client) => {
+      // cliente avisa que (re)entrou na voz / publicou track -> ressincroniza JÁ.
+      // Throttle por sessão (anti-flood da API) + purge do lado OUVINTE: após um
+      // full-reconnect do LiveKit o autoSubscribe re-assina tudo, mas o appliedSubs
+      // ainda dizia "false" — sem purgar, o motor nunca re-desassinaria (review V2).
+      this.onMessage("voice:ready", (client) => {
+        const now = Date.now();
+        if (now - (this.voiceReadyAt.get(client.sessionId) ?? 0) < 1000) return;
+        this.voiceReadyAt.set(client.sessionId, now);
+        const prefix = `${client.sessionId}>`;
+        for (const key of [...this.appliedSubs.keys()]) {
+          if (key.startsWith(prefix)) this.appliedSubs.delete(key);
+        }
         void this.refreshLkSids();
       });
       this.clock.setInterval(() => this.audTick(), 300);
@@ -640,20 +663,28 @@ export class OfficeRoom extends Room<OfficeState> {
     const players: AudPoint[] = [];
     this.state.players.forEach((p, sid) => players.push({ id: sid, x: p.x, y: p.y }));
     const { enters, leaves } = this.aud.tick(players);
-    for (const { a, b } of enters) this.sendProx(a, b, true);
-    for (const { a, b } of leaves) this.sendProx(a, b, false);
-    if (enters.length || leaves.length) this.reconcileSubs();
+    if (enters.length || leaves.length) {
+      // O(pares) em vez de O(pares×clients): índice de clients uma vez por tick
+      const bySid = new Map<string, Client>();
+      for (const c of this.clients) bySid.set(c.sessionId, c);
+      for (const { a, b } of enters) this.sendProx(bySid, a, b, true);
+      for (const { a, b } of leaves) this.sendProx(bySid, a, b, false);
+    }
+    // reconcilia SEMPRE (barato em memória; API só nos diffs) — applies que falharam
+    // re-tentam em 300ms em vez de esperar o refresh de 4s.
+    this.reconcileSubs();
   }
 
-  /** Avisa os DOIS lados de um par que entraram/saíram do alcance de voz (F2 usa isso). */
-  private sendProx(a: string, b: string, entered: boolean): void {
+  /**
+   * Avisa um par que entrou/saiu do alcance de voz (F2). Cada lado só recebe o aviso
+   * se o OUTRO publica áudio — o som significa "você agora OUVE (ou deixou de ouvir)
+   * alguém", nunca "um avatar sem voz passou perto".
+   */
+  private sendProx(bySid: Map<string, Client>, a: string, b: string, entered: boolean): void {
     const evt = entered ? "prox:enter" : "prox:leave";
-    const pa = this.state.players.get(a);
-    const pb = this.state.players.get(b);
-    for (const c of this.clients) {
-      if (c.sessionId === a) c.send(evt, { sid: b, name: pb?.name ?? "" });
-      else if (c.sessionId === b) c.send(evt, { sid: a, name: pa?.name ?? "" });
-    }
+    const inVoice = (id: string) => (this.lkSids.get(id)?.sids.length ?? 0) > 0;
+    if (inVoice(b)) bySid.get(a)?.send(evt, { sid: b, name: this.state.players.get(b)?.name ?? "" });
+    if (inVoice(a)) bySid.get(b)?.send(evt, { sid: a, name: this.state.players.get(a)?.name ?? "" });
   }
 
   /**
@@ -663,26 +694,41 @@ export class OfficeRoom extends Room<OfficeState> {
    */
   private async refreshLkSids(): Promise<void> {
     if (!getFlags().audioAuth) return;
-    const map = await this.lkSubs.audioSidsByIdentity();
-    if (!map) return; // sala LK vazia ou API indisponível (erro já logado com throttle)
-    for (const [id, cur] of map) {
-      const prev = this.lkSids.get(id);
-      if (!prev || prev.sig !== cur.sig) {
-        // publisher mudou as tracks -> força re-aplicar tudo que envolve ele como speaker
-        for (const key of [...this.appliedSubs.keys()]) {
-          if (key.endsWith(`>${id}`)) this.appliedSubs.delete(key);
-        }
-      }
+    // single-flight com coalescing: refreshes sobrepostos (timer 4s + voice:ready em
+    // rajada) não disparam requests paralelos nem terminam fora de ordem — o pedido
+    // que chegar durante o voo vira UMA rodada extra ao final (review V2).
+    if (this.lkRefreshing) {
+      this.lkDirty = true;
+      return;
     }
-    for (const id of [...this.lkSids.keys()]) {
-      if (!map.has(id)) {
-        for (const key of [...this.appliedSubs.keys()]) {
-          if (key.startsWith(`${id}>`) || key.endsWith(`>${id}`)) this.appliedSubs.delete(key);
+    this.lkRefreshing = true;
+    try {
+      do {
+        this.lkDirty = false;
+        const map = await this.lkSubs.audioSidsByIdentity();
+        if (!map) break; // falha de TRANSPORTE: mantém o estado atual; próximo ciclo tenta
+        for (const [id, cur] of map) {
+          const prev = this.lkSids.get(id);
+          if (!prev || prev.sig !== cur.sig) {
+            // publisher mudou as tracks -> força re-aplicar tudo que envolve ele como speaker
+            for (const key of [...this.appliedSubs.keys()]) {
+              if (key.endsWith(`>${id}`)) this.appliedSubs.delete(key);
+            }
+          }
         }
-      }
+        for (const id of [...this.lkSids.keys()]) {
+          if (!map.has(id)) {
+            for (const key of [...this.appliedSubs.keys()]) {
+              if (key.startsWith(`${id}>`) || key.endsWith(`>${id}`)) this.appliedSubs.delete(key);
+            }
+          }
+        }
+        this.lkSids = map;
+        this.reconcileSubs();
+      } while (this.lkDirty);
+    } finally {
+      this.lkRefreshing = false;
     }
-    this.lkSids = map;
-    this.reconcileSubs();
   }
 
   /**
@@ -698,11 +744,38 @@ export class OfficeRoom extends Room<OfficeState> {
         const desired = this.aud.isAudible(listener, speaker);
         const key = `${listener}>${speaker}`;
         if (this.appliedSubs.get(key) === desired) continue;
-        void this.lkSubs.apply(listener, audio.sids, desired).then((ok) => {
-          if (ok) this.appliedSubs.set(key, desired);
-        });
+        this.launchApply(key, listener, speaker, desired);
       }
     }
+  }
+
+  /**
+   * Aplica UMA mudança de assinatura por par de cada vez (single-flight). Se o desejo
+   * flipar enquanto uma chamada está em voo, só a INTENÇÃO MAIS NOVA é aplicada ao
+   * final — nunca duas chamadas opostas em paralelo chegando fora de ordem no LiveKit
+   * (review V2). Falha não grava estado e re-tenta no próximo tick (sem hot-loop).
+   */
+  private launchApply(key: string, listener: string, speaker: string, desired: boolean): void {
+    const flight = this.subFlight.get(key);
+    if (flight) {
+      flight.next = desired; // já tem chamada em voo: só atualiza a intenção
+      return;
+    }
+    const sids = this.lkSids.get(speaker)?.sids ?? [];
+    if (sids.length === 0) return;
+    this.subFlight.set(key, {});
+    void this.lkSubs.apply(listener, sids, desired).then((ok) => {
+      const f = this.subFlight.get(key);
+      this.subFlight.delete(key);
+      if (!ok) return; // re-tentado pelo reconcile do próximo tick (300ms)
+      this.appliedSubs.set(key, desired);
+      // intenção mais nova durante o voo? (ou o motor já mudou de ideia) -> encadeia
+      const cur = this.aud.isAudible(listener, speaker);
+      const next = f?.next !== undefined ? f.next : cur;
+      if (next !== desired && this.lkSids.has(listener) && this.lkSids.has(speaker)) {
+        this.launchApply(key, listener, speaker, next);
+      }
+    });
   }
 
   /** Garante que `name` esteja no registro de cores (cor automatica se ausente). */
@@ -1038,17 +1111,23 @@ export class OfficeRoom extends Room<OfficeState> {
     const sid = client.sessionId;
     const name = this.state.players.get(sid)?.name ?? "";
     this.state.players.delete(sid);
-    // F1: limpa o motor/caches e avisa quem estava no alcance (toca o som de saída)
+    // F1: limpa o motor/caches e avisa quem o OUVIA (som de saída só se ele tinha voz)
     const others = this.aud.dropId(sid);
-    for (const otherId of others) {
-      for (const c of this.clients) {
-        if (c.sessionId === otherId) c.send("prox:leave", { sid, name });
-      }
+    const wasInVoice = (this.lkSids.get(sid)?.sids.length ?? 0) > 0;
+    if (wasInVoice && others.length) {
+      const bySid = new Map<string, Client>();
+      for (const c of this.clients) bySid.set(c.sessionId, c);
+      for (const otherId of others) bySid.get(otherId)?.send("prox:leave", { sid, name });
     }
     this.lkSids.delete(sid);
     for (const key of [...this.appliedSubs.keys()]) {
       if (key.startsWith(`${sid}>`) || key.endsWith(`>${sid}`)) this.appliedSubs.delete(key);
     }
+    for (const key of [...this.subFlight.keys()]) {
+      if (key.startsWith(`${sid}>`) || key.endsWith(`>${sid}`)) this.subFlight.delete(key);
+    }
+    this.voiceReadyAt.delete(sid);
+    revokeVoiceNonce(sid);
     this.emoteAt.delete(sid);
     console.log(`[OfficeRoom] saiu: ${sid}`);
   }

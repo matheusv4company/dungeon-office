@@ -10,6 +10,7 @@ import { loadBoard } from "./board/store";
 import { login, normId, listMemberNames, issueToken, applyLevelGrants } from "./progress/store";
 import { getFlags } from "./gamification/flags";
 import { vaultReady } from "./vault/store";
+import { resolveVoiceNonce } from "./voice/nonces";
 
 // Carrega server/.env (chaves do LiveKit), se existir. Node 20.12+/26.
 try {
@@ -61,7 +62,15 @@ app.get("/token", async (req, res) => {
     res.status(503).json({ error: "voz não configurada (faltam chaves LiveKit)" });
     return;
   }
-  const identity = String(req.query.identity ?? "guest");
+  // Hardening (review V2): o cliente NÃO escolhe a identidade — o nonce (emitido pelo
+  // OfficeRoom e atado à sessão Colyseus) resolve pra identidade real. Sem isso,
+  // qualquer um mintava token com o sessionId alheio e herdava as assinaturas de áudio.
+  const nonce = String(req.query.nonce ?? "");
+  const identity = resolveVoiceNonce(nonce);
+  if (!identity) {
+    res.status(403).json({ error: "nonce de voz inválido — recarregue o escritório" });
+    return;
+  }
   const name = String(req.query.name ?? "Convidado");
   const at = new AccessToken(LK_KEY, LK_SECRET, { identity, name, ttl: "12h" });
   at.addGrant({ roomJoin: true, room: "office", canPublish: true, canSubscribe: true });

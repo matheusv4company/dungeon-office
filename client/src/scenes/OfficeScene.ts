@@ -49,10 +49,15 @@ const VOICE_STALE_MS = 1500; // sem update de posicao ha mais que isso: nao conf
 // isso a zona sobe ate a parede de cima (OY) e encosta nas laterais — assim quem
 // fica colado em qualquer parede continua dentro da bolha, e nada vaza pro lado de fora.
 // Zonas de reunião (bolhas de áudio isoladas) — interior de cada sala PINTADA do escritório.
+// y2 = TOPO da parede sul ((OY+19)*T), NÃO a base dela: o ponto rastreado é o CENTRO do
+// sprite (~14-26px acima dos pés). Com y2 na base, quem andava no CORREDOR público colado
+// na parede tinha o centro dentro da zona e ouvia a reunião inteira (vazamento provado no
+// review V2). Quem está DENTRO encostado na parede tem centro ≤ (OY+19)*T-26 — segue coberto.
+// ESPELHA server/src/voice/audibility.ts (manter em sincronia!).
 const MEETING_ZONES = [
-  { x1: 5 * T, y1: (OY + 13) * T, x2: 12 * T, y2: (OY + 20) * T }, // sala azul (baixo-esq) — parede a parede
-  { x1: 18 * T, y1: (OY + 6) * T, x2: 26 * T, y2: (OY + 12) * T }, // sala vermelha (cima-dir) — parede a parede
-  { x1: 18 * T, y1: (OY + 13) * T, x2: 26 * T, y2: (OY + 20) * T }, // sala dourada (baixo-dir) — parede a parede
+  { x1: 5 * T, y1: (OY + 13) * T, x2: 12 * T, y2: (OY + 19) * T }, // sala azul (baixo-esq)
+  { x1: 18 * T, y1: (OY + 6) * T, x2: 26 * T, y2: (OY + 12) * T }, // sala vermelha (cima-dir)
+  { x1: 18 * T, y1: (OY + 13) * T, x2: 26 * T, y2: (OY + 19) * T }, // sala dourada (baixo-dir)
 ];
 function zoneAt(x: number, y: number): number {
   for (let i = 0; i < MEETING_ZONES.length; i++) {
@@ -121,7 +126,9 @@ export class OfficeScene extends Phaser.Scene {
   private room?: Room;
   private remotes = new Map<string, Remote>();
   private remoteBodies?: Phaser.Physics.Arcade.Group; // corpos de colisão dos remotos (personagem↔personagem)
-  private proxChimeAt = new Map<string, number>(); // F2: último aviso sonoro por pessoa (cooldown)
+  // F2: último aviso sonoro por pessoa (cooldown POR DIREÇÃO — nunca engole a transição oposta)
+  private proxChimeAt = new Map<string, { at: number; entered: boolean }>();
+  private voiceNonce = ""; // F1 hardening: nonce de uso da sessão pro /token do LiveKit
   private shareAudioHintShown = false; // F3: dica de share com som (1x por sessão)
   private emoteBar?: HTMLDivElement; // F7: barra de emojis (DOM)
   private lastSent = 0;
@@ -592,10 +599,19 @@ export class OfficeScene extends Phaser.Scene {
         /* sala caiu no meio — o refresh periódico do servidor cobre */
       }
     };
+    // F1 hardening (review V2): o /token agora exige um NONCE emitido pelo servidor e
+    // atado a ESTA sessão — cliente nenhum consegue mintar token de outra identidade
+    // (impersonar ouvinte furaria o motor de audibilidade). Pede o nonce já.
+    this.voiceNonce = "";
+    room.onMessage("voice:nonce", (m: { nonce?: string }) => {
+      if (this.room !== room) return;
+      this.voiceNonce = String(m?.nonce ?? "");
+    });
+    room.send("voice:nonce?");
     // Se a voz ja estava ligada e o sessionId mudou (reconexao), reconecta a voz
     // com a nova identidade — senao ela "some" pra todos por mismatch de ID.
     if (this.voice.connected && this.voice.getIdentity() !== room.sessionId) {
-      void this.voice.reconnect(room.sessionId, name).catch(() => {});
+      void this.reconnectVoiceWhenNonceArrives(room, name);
     } else if (this.voice.connected) {
       // reconexão do COLYSEUS com a voz já de pé: ressincroniza as assinaturas também
       this.voice.onReady?.();
@@ -973,7 +989,8 @@ export class OfficeScene extends Phaser.Scene {
       try {
         if (!this.voice.connected) {
           btn.setText("🎙️ conectando…").setBackgroundColor("#555");
-          await this.voice.connect(this.sessionId, loadSelection().name || "Convidado");
+          await this.voice.connect(this.sessionId, loadSelection().name || "Convidado", this.voiceNonce);
+          this.fixVoiceIdentity();
         }
         this.voiceOn = !this.voiceOn;
         await this.voice.setMicEnabled(this.voiceOn);
@@ -1012,7 +1029,8 @@ export class OfficeScene extends Phaser.Scene {
       try {
         if (!this.voice.connected) {
           btn.setText("🖥️ conectando…").setBackgroundColor("#555");
-          await this.voice.connect(this.sessionId, loadSelection().name || "Convidado");
+          await this.voice.connect(this.sessionId, loadSelection().name || "Convidado", this.voiceNonce);
+          this.fixVoiceIdentity();
         }
         if (!this.voice.sharing) {
           // F3: dica de como ter SOM no share (o picker do navegador abre em seguida)
@@ -3022,6 +3040,39 @@ export class OfficeScene extends Phaser.Scene {
    * congela), entao da pra atenuar quem se afasta (sem vazar) e manter quem esta
    * perto audivel — sem precisar mutar tudo.
    */
+  /**
+   * Reconexão do Colyseus com voz de pé: espera o nonce novo chegar (é assíncrono) e
+   * reconecta a voz com a identidade nova. Poucas tentativas curtas — se não vier,
+   * a próxima interação do usuário com o botão de voz resolve.
+   */
+  /**
+   * Pós-connect: se o Colyseus reconectou DURANTE o connect da voz, a identidade do
+   * LiveKit ficou presa no sessionId morto — reconecta com o atual (review V2).
+   */
+  private fixVoiceIdentity(): void {
+    if (
+      this.room &&
+      this.voice.connected &&
+      this.voice.getIdentity() !== this.room.sessionId
+    ) {
+      void this.reconnectVoiceWhenNonceArrives(this.room, loadSelection().name || "Convidado");
+    }
+  }
+
+  private async reconnectVoiceWhenNonceArrives(room: Room, name: string): Promise<void> {
+    for (let i = 0; i < 20 && this.room === room; i++) {
+      if (this.voiceNonce) {
+        try {
+          await this.voice.reconnect(room.sessionId, name, this.voiceNonce);
+        } catch {
+          /* botão de voz re-tenta */
+        }
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
   /** F7 (V2): barra fixa de emojis (DOM, bottom-center). Singleton; só com o flag on. */
   private setupEmoteBar(): void {
     if (this.emoteBar || !getFlags().emotes) return;
@@ -3070,8 +3121,11 @@ export class OfficeScene extends Phaser.Scene {
     if (!sid || sid === this.sessionId) return;
     if (!getFlags().proxSound) return;
     const now = performance.now();
-    if (now - (this.proxChimeAt.get(sid) ?? 0) < 2000) return; // anti-flap por pessoa
-    this.proxChimeAt.set(sid, now);
+    // anti-flap POR DIREÇÃO: só suprime repetição do MESMO evento (enter→enter). A
+    // transição oposta (entrou e saiu em <2s) sempre toca — senão o aviso mente.
+    const prev = this.proxChimeAt.get(sid);
+    if (prev && prev.entered === entered && now - prev.at < 2000) return;
+    this.proxChimeAt.set(sid, { at: now, entered });
     playProxChime(entered);
   }
 
@@ -3082,11 +3136,20 @@ export class OfficeScene extends Phaser.Scene {
       // sem estado confiavel (reconectando / antes do 1o sync): silencio total em vez
       // de deixar os ultimos volumes tocando — fail-safe de privacidade.
       this.voice.applyGains(() => 0);
+      this.voice.applyShareVisibility(() => false); // share (video+audio) muta junto
       return;
     }
     const self = { x: this.player.x, y: this.player.y };
     const myZone = zoneAt(self.x, self.y);
     const now = performance.now();
+    // FIX (review V2): o share (video + AUDIO) e gated AQUI — recomputeVoiceProximity roda
+    // nos caminhos event-driven (timer de 2o plano + updates do WS), nao so no rAF. Antes,
+    // o mute do share-audio dependia do update() e congelava com a aba oculta (o exato
+    // invariante historico do vazamento).
+    this.voice.applyShareVisibility((id) => {
+      const p = state.players?.get(id);
+      return !!p && this.canReach(id, p, self, myZone);
+    });
     this.voice.applyGains((id) => {
       const p = state.players?.get(id);
       if (!p) return 0;
@@ -3315,14 +3378,9 @@ export class OfficeScene extends Phaser.Scene {
       }
 
       if (this.voice.connected) {
+        // (a visibilidade do share — video E audio — e aplicada DENTRO do recompute,
+        // que roda tambem nos caminhos de 2o plano; ver review V2)
         this.recomputeVoiceProximity();
-        // tela compartilhada: mesma logica do audio de proximidade —
-        // dentro de uma sala de reuniao so vejo telas da MESMA sala; fora dela,
-        // vejo a tela de quem estiver perto (mesma distancia do audio: VOICE_MAX).
-        this.voice.applyShareVisibility((id) => {
-          const sp = state.players?.get(id);
-          return !!sp && this.canReach(id, sp, self, myZone);
-        });
 
         // auto-mute por privacidade: so transmite se alguem pode te ouvir
         let audible = false;
@@ -3349,6 +3407,7 @@ export class OfficeScene extends Phaser.Scene {
       // Silencia todo mundo ate o jogo voltar — senao a voz de quem estava perto
       // "vaza" pelo ambiente inteiro durante o blip de reconexao (bug intermitente).
       this.voice.applyGains(() => 0);
+      this.voice.applyShareVisibility(() => false); // share (video+audio) some/muta junto
     }
 
     if (this.voiceBtn) this.voiceBtn.setPosition(this.scale.width - 16, 16);

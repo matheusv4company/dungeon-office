@@ -57,10 +57,13 @@ export class VoiceManager {
    */
   onReady?: () => void;
 
-  async connect(identity: string, displayName: string): Promise<void> {
+  async connect(identity: string, displayName: string, nonce: string): Promise<void> {
     if (this.connected) return;
+    if (!nonce) throw new Error("nonce da voz ainda não chegou — tente de novo");
+    // O /token NÃO aceita identidade escolhida pelo cliente: o nonce (emitido pelo
+    // servidor, atado à sessão Colyseus) é quem determina a identidade no LiveKit.
     const resp = await fetch(
-      `${SERVER_HTTP_URL}/token?identity=${encodeURIComponent(identity)}&name=${encodeURIComponent(displayName)}`,
+      `${SERVER_HTTP_URL}/token?nonce=${encodeURIComponent(nonce)}&name=${encodeURIComponent(displayName)}`,
     );
     if (!resp.ok) throw new Error(`token HTTP ${resp.status}`);
     const data = (await resp.json()) as { token?: string; url?: string; error?: string };
@@ -70,9 +73,12 @@ export class VoiceManager {
 
     room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub, p: RemoteParticipant) => {
       if (track.source === Track.Source.ScreenShareAudio) {
-        // F3: áudio do share — toca CHEIO (não passa pelo fade de proximidade da voz);
-        // a entrega da track já é decidida pelo motor de audibilidade do servidor.
+        // F3: áudio do share. NASCE MUDO (deny-by-default, espelho do setVolume(0) do mic):
+        // só desmuta quando applyShareVisibility confirmar que este ouvinte pode ver o
+        // share — cobre a janela do autoSubscribe até o servidor desassinar E o caso da
+        // aba em 2º plano (review V2). O attach vem antes do muted (attach sobrescreve).
         const el = track.attach();
+        (el as HTMLAudioElement).muted = true;
         el.style.display = "none";
         document.body.appendChild(el);
         this.shareAudioEls.set(p.identity, el);
@@ -92,8 +98,7 @@ export class VoiceManager {
 
     room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, _pub, p: RemoteParticipant) => {
       if (track.source === Track.Source.ScreenShareAudio) {
-        this.shareAudioEls.get(p.identity)?.remove();
-        this.shareAudioEls.delete(p.identity);
+        this.dropShareAudio(p.identity);
         this.markShareAudio(p.identity, false);
       } else if (track.kind === Track.Kind.Audio) {
         this.els.get(p.identity)?.remove();
@@ -108,8 +113,7 @@ export class VoiceManager {
       this.els.get(p.identity)?.remove();
       this.els.delete(p.identity);
       this.tracks.delete(p.identity);
-      this.shareAudioEls.get(p.identity)?.remove();
-      this.shareAudioEls.delete(p.identity);
+      this.dropShareAudio(p.identity);
       this.removeShare(p.identity);
     });
 
@@ -135,9 +139,9 @@ export class VoiceManager {
   }
 
   /** Reconecta a voz com uma nova identidade (apos o Colyseus trocar o sessionId). */
-  async reconnect(identity: string, displayName: string): Promise<void> {
+  async reconnect(identity: string, displayName: string, nonce: string): Promise<void> {
     this.disconnect();
-    await this.connect(identity, displayName);
+    await this.connect(identity, displayName, nonce);
   }
 
   async setMicEnabled(on: boolean): Promise<void> {
@@ -147,6 +151,7 @@ export class VoiceManager {
         on,
         on && this.micDeviceId ? { deviceId: this.micDeviceId } : undefined,
       );
+      this.onReady?.(); // publicou/despublicou track -> servidor ressincroniza os SIDs JA
     }
   }
 
@@ -203,6 +208,7 @@ export class VoiceManager {
       );
       this.sharing = this.room.localParticipant.isScreenShareEnabled;
       if (this.sharing) this.showSelfShare();
+      this.onReady?.(); // publicou tracks novas (video/audio) -> servidor ressincroniza JA
       return this.sharing;
     } catch {
       this.sharing = false;
@@ -214,6 +220,7 @@ export class VoiceManager {
     if (this.room) await this.room.localParticipant.setScreenShareEnabled(false);
     this.sharing = false;
     this.hideSelfShare();
+    this.onReady?.(); // despublicou -> servidor limpa os SIDs antigos JA
   }
 
   applyGains(gainFor: (identity: string) => number): void {
@@ -233,7 +240,26 @@ export class VoiceManager {
     this.els.get(id)?.remove();
     this.els.delete(id);
     this.tracks.delete(id);
-    this.shareAudioEls.get(id)?.remove();
+    this.dropShareAudio(id);
+  }
+
+  /**
+   * Solta o áudio de share de um participante SILENCIANDO ANTES de remover: um <audio>
+   * com srcObject continua tocando fora do DOM (a track segura a referência) — remover
+   * sem mutar/pausar deixava som fantasma (review V2).
+   */
+  private dropShareAudio(id: string): void {
+    const el = this.shareAudioEls.get(id) as HTMLAudioElement | undefined;
+    if (el) {
+      el.muted = true;
+      try {
+        el.pause();
+        el.srcObject = null;
+      } catch {
+        /* ignore */
+      }
+      el.remove();
+    }
     this.shareAudioEls.delete(id);
   }
 
@@ -280,8 +306,7 @@ export class VoiceManager {
     this.els.forEach((el) => el.remove());
     this.els.clear();
     this.tracks.clear();
-    this.shareAudioEls.forEach((el) => el.remove());
-    this.shareAudioEls.clear();
+    for (const id of [...this.shareAudioEls.keys()]) this.dropShareAudio(id);
     this.shares.forEach((s) => {
       try {
         s.track.detach();

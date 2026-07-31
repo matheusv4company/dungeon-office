@@ -82,9 +82,12 @@ export class LkSubscriptions {
       }
       return map;
     } catch (e) {
-      // sala pode simplesmente ainda não existir (ninguém na voz) — isso não é erro
       const msg = String((e as Error)?.message ?? "");
-      if (!/not found|does not exist/i.test(msg)) this.logErr("listParticipants", e);
+      // sala ainda não existe (ninguém na voz) = ZERO participantes — devolve Map VAZIO,
+      // que flui pelo caminho normal de limpeza (zera lkSids/appliedSubs). null fica só
+      // pra falha de TRANSPORTE (aí manter o estado atual é mais seguro que zerar às cegas).
+      if (/not found|does not exist/i.test(msg)) return new Map();
+      this.logErr("listParticipants", e);
       return null;
     }
   }
