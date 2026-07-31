@@ -19,6 +19,7 @@ export type GamifFlags = {
   proxSound: boolean; // F2 V2 — aviso sonoro de entrada/saida do alcance de voz
   shareAudio: boolean; // F3 V2 — compartilhamento de tela com AUDIO (aba/sistema)
   emotes: boolean; // F7 V2 — emoji flutuante em cima do personagem
+  meetingScribe: boolean; // F8 V2 - transcricao/ata automatica das reunioes
 };
 
 // Default: tudo LIGADO (mesmo default do servidor). Se o /config falhar no boot, o jogo
@@ -39,6 +40,7 @@ const TODOS_ON: GamifFlags = {
   proxSound: true,
   shareAudio: true,
   emotes: true,
+  meetingScribe: true,
 };
 
 let flags: GamifFlags = { ...TODOS_ON };

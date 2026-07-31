@@ -25,9 +25,11 @@ import {
   type VaultEntry,
   type EntryPub,
 } from "../vault/store";
-import { AudibilityEngine, type AudPoint } from "../voice/audibility";
+import { AudibilityEngine, zoneAt, type AudPoint } from "../voice/audibility";
 import { LkSubscriptions, type AudioSids } from "../voice/subscriptions";
 import { issueVoiceNonce, revokeVoiceNonce } from "../voice/nonces";
+import { MeetingScribe, type MeetingSession } from "../meetings/scribe";
+import { summarizeMeeting, appendMeetingLog } from "../meetings/summarize";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; authToken?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -78,6 +80,9 @@ export class OfficeRoom extends Room<OfficeState> {
   private lkDirty = false; // pedido de refresh chegou durante um refresh em voo
   private voiceReadyAt = new Map<string, number>(); // throttle do voice:ready por sessão
   private emoteAt = new Map<string, number>(); // F7: último emote por cliente (rate limit)
+  // ---- F8: transcrição de reuniões ----
+  private scribe = new MeetingScribe();
+  private scribeSayAt = new Map<string, number>(); // rate limit do meeting:say por cliente
 
   async onCreate() {
     this.setState(new OfficeState());
@@ -600,6 +605,26 @@ export class OfficeRoom extends Room<OfficeState> {
       client.send("vault:imported", { count: parsed.length });
     });
 
+    // ---------- F8 (V2): transcrição de reuniões (ata + tarefas automáticas) ----------
+    // O navegador transcreve (Web Speech, SÓ TEXTO sai de lá) e manda meeting:say; o
+    // servidor mantém a sessão por zona e, ao fechar, gera a ata via Haiku.
+    if (getFlags().meetingScribe) {
+      this.onMessage("meeting:say", (client, msg: { text?: string }) => {
+        if (!getFlags().meetingScribe) return;
+        const p = this.state.players.get(client.sessionId);
+        if (!p || !p.memberId) return; // só membro LOGADO alimenta a ata
+        const now = Date.now();
+        if (now - (this.scribeSayAt.get(client.sessionId) ?? 0) < 700) return; // anti-flood
+        this.scribeSayAt.set(client.sessionId, now);
+        const text = String(msg?.text ?? "").trim().slice(0, 500);
+        if (!text) return;
+        const zone = zoneAt(p.x, p.y);
+        if (zone < 0) return; // fora de sala de reunião: nunca transcreve
+        this.scribe.say(zone, p.name || p.memberId, text, now);
+      });
+      this.clock.setInterval(() => this.scribeTick(), 1000);
+    }
+
     // ---------- F7 (V2): emoji flutuante ----------
     // Whitelist + rate limit por cliente; broadcast pra todos renderizarem em cima do autor.
     this.onMessage("emote", (client, msg: { e?: string }) => {
@@ -654,6 +679,85 @@ export class OfficeRoom extends Room<OfficeState> {
     }
 
     console.log("[OfficeRoom] sala criada");
+  }
+
+  // ---------- F8: transcrição — ciclo de sessões e geração da ata ----------
+
+  /** A cada 1s: conta gente por zona, abre/fecha sessões; sessão fechada vira ata. */
+  private scribeTick(): void {
+    const counts = new Map<number, number>();
+    this.state.players.forEach((p) => {
+      const z = zoneAt(p.x, p.y);
+      if (z >= 0) counts.set(z, (counts.get(z) ?? 0) + 1);
+    });
+    for (const s of this.scribe.tick(counts, Date.now())) void this.finishMeeting(s);
+  }
+
+  /** Fecha a reunião: resume via Haiku, cria card-ata + tarefas 🤖 e avisa o time. */
+  private async finishMeeting(s: MeetingSession): Promise<void> {
+    const words = s.utterances.reduce((n, u) => n + u.text.split(/\s+/).length, 0);
+    if (words < 30) return; // conversa curta/ruído — sem ata
+    const ata = await summarizeMeeting(s.utterances);
+    if (!ata || !ata.resumo) return; // IA fora ou "não era reunião de trabalho"
+    const ZONE_NAMES = ["azul", "vermelha", "dourada"];
+    const d = new Date();
+    const dd = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const hh = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    const desc = [
+      `Sala ${ZONE_NAMES[s.zone] ?? s.zone} · participantes: ${[...s.speakers].join(", ") || "—"}`,
+      "",
+      "RESUMO:",
+      ata.resumo,
+    ]
+      .concat(ata.decisoes.length ? ["", "DECISÕES:", ...ata.decisoes.map((x) => `• ${x}`)] : [])
+      .join("\n");
+    this.createScribeTask(`📋 Ata — ${dd} ${hh}`, desc, "", "");
+    // responsável só quando o nome dito bate com um membro REGISTRADO (normId) — a IA
+    // nunca atribui tarefa pra nome que não existe no quadro.
+    const known = new Map<string, string>();
+    this.state.memberColors.forEach((_c, nome) => known.set(normId(nome), nome));
+    for (const t of ata.tarefas) {
+      const assignee = known.get(normId(t.responsavel)) ?? "";
+      this.createScribeTask(
+        `🤖 ${t.titulo}`,
+        `Criada automaticamente pela ata da reunião de ${dd} ${hh}. Confere e ajusta o que precisar.`,
+        assignee,
+        t.due,
+      );
+    }
+    this.persistBoard();
+    appendMeetingLog({
+      startedAt: s.startedAt,
+      endedAt: Date.now(),
+      zone: s.zone,
+      speakers: [...s.speakers],
+      utterances: s.utterances.length,
+      ata,
+    });
+    this.broadcast("meeting:ata", { tarefas: ata.tarefas.length });
+    console.log(`[scribe] ata criada (${s.utterances.length} falas -> ${ata.tarefas.length} tarefas)`);
+  }
+
+  /** Cria um card vindo da ata (client "Reunião", coluna A Fazer, fim da coluna). */
+  private createScribeTask(title: string, desc: string, assignee: string, due: string): void {
+    const t = new Task();
+    t.id = `t${Date.now().toString(36)}${(this.taskSeq++).toString(36)}`;
+    t.title = title.slice(0, 200);
+    t.desc = desc.slice(0, 4000);
+    t.assignee = assignee.slice(0, 60);
+    t.client = "Reunião";
+    t.due = due.slice(0, 10);
+    t.createdAt = Date.now();
+    this.markColumn(t, "afazer");
+    t.col = "afazer";
+    let maxOrder = -1;
+    this.state.tasks.forEach((x) => {
+      if (x.col === "afazer" && x.order > maxOrder) maxOrder = x.order;
+    });
+    t.order = maxOrder + 1;
+    this.state.tasks.set(t.id, t);
+    this.register(this.state.clientColors, t.client);
+    if (assignee) this.register(this.state.memberColors, assignee);
   }
 
   // ---------- F1: audibilidade — tick, eventos de proximidade e reconciliação ----------
@@ -1129,6 +1233,7 @@ export class OfficeRoom extends Room<OfficeState> {
     this.voiceReadyAt.delete(sid);
     revokeVoiceNonce(sid);
     this.emoteAt.delete(sid);
+    this.scribeSayAt.delete(sid);
     console.log(`[OfficeRoom] saiu: ${sid}`);
   }
 

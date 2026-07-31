@@ -20,6 +20,7 @@ export type GamifFlags = {
   proxSound: boolean; // F2 V2 — aviso sonoro de entrada/saida do alcance de voz
   shareAudio: boolean; // F3 V2 — compartilhamento de tela com AUDIO (aba/sistema)
   emotes: boolean; // F7 V2 — emoji flutuante em cima do personagem
+  meetingScribe: boolean; // F8 V2 - transcricao/ata automatica das reunioes
 };
 
 // Desliga com "0", "false", "off" ou "no" (qualquer caixa); qualquer outro valor —
@@ -54,5 +55,6 @@ export function getFlags(): GamifFlags {
     proxSound: ligado("PROX_SOUND"),
     shareAudio: ligado("SHARE_AUDIO"),
     emotes: ligado("EMOTES"),
+    meetingScribe: ligado("MEETING_SCRIBE"),
   };
 }

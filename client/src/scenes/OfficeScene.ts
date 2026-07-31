@@ -9,6 +9,7 @@ import { loadMember } from "../auth/login";
 import { getFlags, getVaultEnabled } from "../net/config";
 import { COLLISION } from "../mapCollision";
 import { playProxChime } from "../audio/chime";
+import { SpeechScribe } from "../net/scribe";
 import { daysToDue } from "../util/overdue";
 
 const T = 32;
@@ -131,6 +132,11 @@ export class OfficeScene extends Phaser.Scene {
   private voiceNonce = ""; // F1 hardening: nonce de uso da sessão pro /token do LiveKit
   private shareAudioHintShown = false; // F3: dica de share com som (1x por sessão)
   private emoteBar?: HTMLDivElement; // F7: barra de emojis (DOM)
+  // ---- F8: escriba de reuniões ----
+  private scribe?: SpeechScribe;
+  private scribePaused = false; // pausa PESSOAL da transcrição (botão no badge)
+  private scribeBadge?: HTMLDivElement;
+  private lastScribeEval = 0; // throttle da elegibilidade (~600ms)
   private lastSent = 0;
   private lastDir = 0;
 
@@ -283,6 +289,10 @@ export class OfficeScene extends Phaser.Scene {
     this.gestorBtn = undefined;
     this.emoteBar?.remove();
     this.emoteBar = undefined;
+    this.scribe?.setActive(false);
+    this.scribeBadge?.remove();
+    this.scribeBadge = undefined;
+    this.scribePaused = false;
     this.vault?.destroy();
     this.vault = undefined;
     this.vaultBtn = undefined;
@@ -677,6 +687,16 @@ export class OfficeScene extends Phaser.Scene {
         this.showAiFeedback(String(m?.status ?? ""), Number(m?.score ?? -1), String(m?.note ?? ""));
       },
     );
+    // F8 (V2): a ata da reunião ficou pronta (tarefas 🤖 já estão no gestor)
+    room.onMessage("meeting:ata", (m: { tarefas?: number }) => {
+      if (this.room !== room) return;
+      const n = Number(m?.tarefas ?? 0);
+      this.showToast(
+        `📋 Ata da reunião pronta${n ? ` — ${n} tarefa(s) 🤖 criada(s)` : ""} (veja o Gestor)`,
+        "#15803d",
+        5000,
+      );
+    });
     // F4 (V2): entrega REJEITADA pelo servidor — mostra o motivo (fim do "cliquei e nada").
     room.onMessage("task:deliverError", (m: { reason?: string }) => {
       if (this.room !== room) return;
@@ -3073,6 +3093,72 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * F8 (V2): avalia (throttled) se a transcrição deve estar ATIVA — flag on + membro
+   * logado + dentro de sala de reunião + voz com mic ligado + sem pausa manual — e
+   * mantém o badge de estado. O áudio nunca sai do navegador; só texto vai ao servidor.
+   */
+  private evalScribe(myZone: number): void {
+    const now = performance.now();
+    if (now - this.lastScribeEval < 600) return;
+    this.lastScribeEval = now;
+    if (!getFlags().meetingScribe) {
+      this.scribe?.setActive(false);
+      this.updateScribeBadge("hidden");
+      return;
+    }
+    if (!this.scribe) {
+      this.scribe = new SpeechScribe();
+      this.scribe.onText = (t) => {
+        try {
+          this.room?.send("meeting:say", { text: t });
+        } catch {
+          /* sala reconectando — a fala se perde, aceitável */
+        }
+      };
+    }
+    const inZone = myZone >= 0;
+    const isMember = !!loadMember()?.memberId;
+    const micOn = this.voice.connected && this.voice.micEnabled;
+    const eligible = inZone && isMember && micOn && !this.scribePaused && this.scribe.supported();
+    this.scribe.setActive(eligible);
+    if (!inZone || !isMember) this.updateScribeBadge("hidden");
+    else if (!this.scribe.supported()) this.updateScribeBadge("unsupported");
+    else if (this.scribePaused) this.updateScribeBadge("paused");
+    else if (!micOn) this.updateScribeBadge("nomic");
+    else this.updateScribeBadge("on");
+  }
+
+  private updateScribeBadge(state: "hidden" | "on" | "paused" | "nomic" | "unsupported"): void {
+    if (state === "hidden") {
+      this.scribeBadge?.remove();
+      this.scribeBadge = undefined;
+      return;
+    }
+    if (!this.scribeBadge) {
+      const b = document.createElement("div");
+      b.style.cssText =
+        "position:fixed;top:76px;left:50%;transform:translateX(-50%);z-index:9000;" +
+        "font:12px monospace;color:#fff;background:#15131dd9;border:1px solid #3a3550;" +
+        "border-radius:14px;padding:5px 12px;cursor:pointer;";
+      b.onclick = () => {
+        this.scribePaused = !this.scribePaused;
+        this.lastScribeEval = 0; // re-avalia já
+      };
+      document.body.appendChild(b);
+      this.scribeBadge = b;
+    }
+    const txt =
+      state === "on"
+        ? "🔴 transcrevendo a reunião — clique pra pausar a sua parte"
+        : state === "paused"
+          ? "⏸️ sua transcrição está pausada — clique pra retomar"
+          : state === "nomic"
+            ? "📋 reunião com ata automática — ative a voz pra entrar na ata"
+            : "📋 ata automática: use Chrome/Edge pra sua fala ser transcrita";
+    if (this.scribeBadge.textContent !== txt) this.scribeBadge.textContent = txt;
+  }
+
   /** F7 (V2): barra fixa de emojis (DOM, bottom-center). Singleton; só com o flag on. */
   private setupEmoteBar(): void {
     if (this.emoteBar || !getFlags().emotes) return;
@@ -3347,6 +3433,7 @@ export class OfficeScene extends Phaser.Scene {
       const self = { x: this.player.x, y: this.player.y };
       const myZone = zoneAt(self.x, self.y);
       this.updateMeetingBadge(myZone >= 0);
+      this.evalScribe(myZone); // F8: escriba liga/desliga conforme a elegibilidade (throttled)
 
       // beep baixo quando alguem PERTO (mesma distancia do audio) levanta a mao
       this.remotes.forEach((_r, sid) => {
