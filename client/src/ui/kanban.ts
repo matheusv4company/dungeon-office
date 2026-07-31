@@ -230,6 +230,11 @@ function injectStyles() {
 .kb-cli-row .nm{flex:1;font-size:13px;}
 .kb-cli-row input[type=color]{width:34px;height:28px;border:1px solid #ccc;border-radius:6px;padding:0;background:none;cursor:pointer;}
 .kb-cli-row .ren{font-size:11px;background:#eef;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;}
+.kb-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.kb-chip{font:13px system-ui;padding:5px 11px;border-radius:14px;border:1.5px solid var(--chip,#9aa1ae);
+  background:#fff;color:#1f2937;cursor:pointer;}
+.kb-chip.on{background:var(--chip,#2563eb);border-color:var(--chip,#2563eb);color:#fff;font-weight:600;}
+.kb-chip.add{border-style:dashed;color:#4b5563;}
 `;
   document.head.appendChild(s);
 }
@@ -951,45 +956,62 @@ export class KanbanBoard {
 
   // ---------- modal criar/editar ----------
 
-  /** Select gerenciado p/ cliente/membro: lista os registrados + "adicionar novo". */
-  private buildManagedSelect(field: "client" | "assignee", current: string): HTMLSelectElement {
-    const sel = document.createElement("select");
+  /**
+   * F5 (V2): CHIPS clicáveis p/ cliente/membro no editor — 1 clique em vez de abrir
+   * dropdown (e alvo de toque maior no celular). Cada chip usa a cor registrada do
+   * cliente/membro; "➕ novo…" mantém o fluxo de cadastro com cor automática.
+   * Devolve { el, value } — o save lê .value igual lia no <select>.
+   */
+  private buildManagedChips(
+    field: "client" | "assignee",
+    current: string,
+  ): { el: HTMLDivElement; readonly value: string } {
     const isClient = field === "client";
-    const addMsg = isClient ? "client:setColor" : "member:setColor";
-    const fill = (val: string) => {
-      sel.innerHTML = "";
-      sel.appendChild(new Option(isClient ? "— sem cliente —" : "— sem responsável —", ""));
+    const wrap = document.createElement("div");
+    wrap.className = "kb-chips";
+    let val = current;
+    const rebuild = () => {
+      wrap.innerHTML = "";
+      const mkChip = (label: string, value: string, color?: string) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "kb-chip" + (val === value ? " on" : "");
+        b.textContent = label;
+        if (color) b.style.setProperty("--chip", color);
+        b.onclick = () => {
+          val = value;
+          rebuild();
+        };
+        wrap.appendChild(b);
+      };
+      mkChip(isClient ? "— sem cliente" : "— ninguém", "");
       const names = this.knownValues(field);
       if (val && !names.includes(val)) names.push(val);
       names.sort((a, b) => a.localeCompare(b));
-      for (const n of names) {
-        const o = new Option(n, n);
-        o.style.color = this.baseFor(field, n);
-        sel.appendChild(o);
-      }
-      sel.appendChild(new Option(isClient ? "➕ Adicionar cliente…" : "➕ Adicionar membro…", "__add__"));
-      sel.value = val;
-      sel.dataset.prev = val;
-    };
-    fill(current);
-    sel.onchange = async () => {
-      if (sel.value === "__add__") {
-        const label = isClient ? "cliente" : "membro";
-        const name = (await this.askText(`Nome do novo ${label}:`, ""))?.trim();
-        if (name) {
-          // registra so se for novo — nao sobrescreve a cor escolhida de um existente
-          if (!this.knownValues(field).includes(name)) {
-            this.room.send(addMsg, { name, color: autoHex(name) });
-          }
-          fill(name);
-        } else {
-          fill(sel.dataset.prev ?? "");
+      for (const n of names) mkChip(n, n, this.baseFor(field, n));
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "kb-chip add";
+      add.textContent = isClient ? "➕ novo cliente" : "➕ novo membro";
+      add.onclick = async () => {
+        const name = (await this.askText(`Nome do novo ${isClient ? "cliente" : "membro"}:`, ""))?.trim();
+        if (!name) return;
+        // registra só se for novo — não sobrescreve a cor escolhida de um existente
+        if (!this.knownValues(field).includes(name)) {
+          this.room.send(isClient ? "client:setColor" : "member:setColor", { name, color: autoHex(name) });
         }
-      } else {
-        sel.dataset.prev = sel.value;
-      }
+        val = name;
+        rebuild();
+      };
+      wrap.appendChild(add);
     };
-    return sel;
+    rebuild();
+    return {
+      el: wrap,
+      get value() {
+        return val;
+      },
+    };
   }
 
   private openEditor(task: TaskView | null, col: string) {
@@ -1017,10 +1039,10 @@ export class KanbanBoard {
     const desc = document.createElement("textarea");
     desc.value = task?.desc ?? "";
     mk("Descrição", desc);
-    const assignee = this.buildManagedSelect("assignee", task?.assignee ?? "");
-    mk("Responsável", assignee);
-    const client = this.buildManagedSelect("client", task?.client ?? "");
-    mk("Cliente", client);
+    const assignee = this.buildManagedChips("assignee", task?.assignee ?? "");
+    mk("Responsável", assignee.el);
+    const client = this.buildManagedChips("client", task?.client ?? "");
+    mk("Cliente", client.el);
     const unitSel = document.createElement("select");
     for (const o of UNIT_OPTS) unitSel.appendChild(new Option(o.label, o.value));
     unitSel.value = task?.unit ?? "";
