@@ -974,11 +974,15 @@ export class KanbanBoard {
   private buildManagedChips(
     field: "client" | "assignee",
     current: string,
+    startCollapsed = false,
   ): { el: HTMLDivElement; readonly value: string } {
     const isClient = field === "client";
     const wrap = document.createElement("div");
     wrap.className = "kb-chips";
     let val = current;
+    // EDITANDO uma tarefa existente, a lista inteira só polui: mostra SÓ o selecionado
+    // + "✎ trocar" (expande sob demanda). Escolher um valor recolhe de novo.
+    let collapsed = startCollapsed;
     const rebuild = () => {
       wrap.innerHTML = "";
       const mkChip = (label: string, value: string, color?: string) => {
@@ -989,10 +993,24 @@ export class KanbanBoard {
         if (color) b.style.setProperty("--chip", color);
         b.onclick = () => {
           val = value;
+          collapsed = startCollapsed; // escolheu -> recolhe de novo (no modo edição)
           rebuild();
         };
         wrap.appendChild(b);
       };
+      if (collapsed) {
+        mkChip(val || (isClient ? "— sem cliente" : "— ninguém"), val, val ? this.baseFor(field, val) : undefined);
+        const swap = document.createElement("button");
+        swap.type = "button";
+        swap.className = "kb-chip add";
+        swap.textContent = "✎ trocar";
+        swap.onclick = () => {
+          collapsed = false;
+          rebuild();
+        };
+        wrap.appendChild(swap);
+        return;
+      }
       mkChip(isClient ? "— sem cliente" : "— ninguém", "");
       const names = this.knownValues(field);
       if (val && !names.includes(val)) names.push(val);
@@ -1010,6 +1028,7 @@ export class KanbanBoard {
           this.room.send(isClient ? "client:setColor" : "member:setColor", { name, color: autoHex(name) });
         }
         val = name;
+        collapsed = startCollapsed;
         rebuild();
       };
       wrap.appendChild(add);
@@ -1048,9 +1067,9 @@ export class KanbanBoard {
     const desc = document.createElement("textarea");
     desc.value = task?.desc ?? "";
     mk("Descrição", desc);
-    const assignee = this.buildManagedChips("assignee", task?.assignee ?? "");
+    const assignee = this.buildManagedChips("assignee", task?.assignee ?? "", editing);
     mk("Responsável", assignee.el);
-    const client = this.buildManagedChips("client", task?.client ?? "");
+    const client = this.buildManagedChips("client", task?.client ?? "", editing);
     mk("Cliente", client.el);
     const unitSel = document.createElement("select");
     for (const o of UNIT_OPTS) unitSel.appendChild(new Option(o.label, o.value));

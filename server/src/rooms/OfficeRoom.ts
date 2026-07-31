@@ -25,7 +25,7 @@ import {
   type VaultEntry,
   type EntryPub,
 } from "../vault/store";
-import { AudibilityEngine, zoneAt, type AudPoint } from "../voice/audibility";
+import { AudibilityEngine, zoneAt, CHIME_ENTER, CHIME_EXIT, type AudPoint } from "../voice/audibility";
 import { LkSubscriptions, type AudioSids } from "../voice/subscriptions";
 import { issueVoiceNonce, revokeVoiceNonce } from "../voice/nonces";
 import { MeetingScribe, type MeetingSession } from "../meetings/scribe";
@@ -72,6 +72,9 @@ export class OfficeRoom extends Room<OfficeState> {
   private vaultSeq = 0;
   // ---- F1: motor de audibilidade (quem RECEBE áudio de quem — decidido AQUI) ----
   private aud = new AudibilityEngine();
+  // F2: motor SEPARADO pros avisos sonoros, com raio curto (entra 2,5 tiles / sai 3) —
+  // o "ding" toca quando a pessoa chega perto DE VERDADE, não no raio de assinatura.
+  private chimeAud = new AudibilityEngine(CHIME_ENTER, CHIME_EXIT);
   private lkSubs = new LkSubscriptions();
   private lkSids = new Map<string, AudioSids>(); // identity(sessionId) -> sids de áudio no LiveKit
   private appliedSubs = new Map<string, boolean>(); // "listener>speaker" -> último estado APLICADO
@@ -751,7 +754,7 @@ export class OfficeRoom extends Room<OfficeState> {
     ]
       .concat(ata.decisoes.length ? ["", "DECISÕES:", ...ata.decisoes.map((x) => `• ${x}`)] : [])
       .join("\n");
-    this.createScribeTask(`📋 Ata — ${dd} ${hh}`, desc, "", "");
+    this.createScribeTask(`📋 Ata — ${dd} ${hh}`, desc, "", "", true); // ata no TOPO da coluna
     // responsável só quando o nome dito bate com um membro REGISTRADO (normId) — a IA
     // nunca atribui tarefa pra nome que não existe no quadro.
     const known = new Map<string, string>();
@@ -778,8 +781,12 @@ export class OfficeRoom extends Room<OfficeState> {
     console.log(`[scribe] ata criada (${s.utterances.length} falas -> ${ata.tarefas.length} tarefas)`);
   }
 
-  /** Cria um card vindo da ata (client "Reunião", coluna A Fazer, fim da coluna). */
-  private createScribeTask(title: string, desc: string, assignee: string, due: string): void {
+  /**
+   * Cria um card vindo da ata (client "Reunião", coluna A Fazer). O card-ATA vai pro
+   * TOPO da coluna (senão se perde no fim de uma lista longa e "a ata sumiu"); as
+   * tarefas 🤖 vão pro fim, como tarefas normais.
+   */
+  private createScribeTask(title: string, desc: string, assignee: string, due: string, atTop = false): void {
     const t = new Task();
     t.id = `t${Date.now().toString(36)}${(this.taskSeq++).toString(36)}`;
     t.title = title.slice(0, 200);
@@ -790,11 +797,14 @@ export class OfficeRoom extends Room<OfficeState> {
     t.createdAt = Date.now();
     this.markColumn(t, "afazer");
     t.col = "afazer";
+    let minOrder = Infinity;
     let maxOrder = -1;
     this.state.tasks.forEach((x) => {
-      if (x.col === "afazer" && x.order > maxOrder) maxOrder = x.order;
+      if (x.col !== "afazer") return;
+      if (x.order > maxOrder) maxOrder = x.order;
+      if (x.order < minOrder) minOrder = x.order;
     });
-    t.order = maxOrder + 1;
+    t.order = atTop ? (minOrder === Infinity ? 0 : minOrder - 1) : maxOrder + 1;
     this.state.tasks.set(t.id, t);
     this.register(this.state.clientColors, t.client);
     if (assignee) this.register(this.state.memberColors, assignee);
@@ -816,13 +826,15 @@ export class OfficeRoom extends Room<OfficeState> {
   private audTick(): void {
     const players: AudPoint[] = [];
     this.state.players.forEach((p, sid) => players.push({ id: sid, x: p.x, y: p.y }));
-    const { enters, leaves } = this.aud.tick(players);
-    if (enters.length || leaves.length) {
+    this.aud.tick(players); // raio largo: só alimenta as ASSINATURAS (reconcile abaixo)
+    // raio CURTO: gera os avisos sonoros (o ding toca perto de verdade — 2,5/3 tiles)
+    const chime = this.chimeAud.tick(players);
+    if (chime.enters.length || chime.leaves.length) {
       // O(pares) em vez de O(pares×clients): índice de clients uma vez por tick
       const bySid = new Map<string, Client>();
       for (const c of this.clients) bySid.set(c.sessionId, c);
-      for (const { a, b } of enters) this.sendProx(bySid, a, b, true);
-      for (const { a, b } of leaves) this.sendProx(bySid, a, b, false);
+      for (const { a, b } of chime.enters) this.sendProx(bySid, a, b, true);
+      for (const { a, b } of chime.leaves) this.sendProx(bySid, a, b, false);
     }
     // reconcilia SEMPRE (barato em memória; API só nos diffs) — applies que falharam
     // re-tentam em 300ms em vez de esperar o refresh de 4s.
@@ -889,7 +901,8 @@ export class OfficeRoom extends Room<OfficeState> {
         for (const { id, on } of voiceChanged) {
           const name = this.state.players.get(id)?.name ?? "";
           for (const c of this.clients) {
-            if (c.sessionId !== id && this.aud.isAudible(id, c.sessionId)) {
+            // aviso só pra quem está no raio CURTO (o mesmo do ding de proximidade)
+            if (c.sessionId !== id && this.chimeAud.isAudible(id, c.sessionId)) {
               c.send(on ? "prox:enter" : "prox:leave", { sid: id, name });
             }
           }
@@ -1287,13 +1300,15 @@ export class OfficeRoom extends Room<OfficeState> {
     const sid = client.sessionId;
     const name = this.state.players.get(sid)?.name ?? "";
     this.state.players.delete(sid);
-    // F1: limpa o motor/caches e avisa quem o OUVIA (som de saída só se ele tinha voz)
-    const others = this.aud.dropId(sid);
+    // F1/F2: limpa os DOIS motores; o som de saída vai só pra quem estava no raio
+    // CURTO (mesmo raio do ding) e só se quem saiu tinha voz publicada
+    this.aud.dropId(sid);
+    const chimeOthers = this.chimeAud.dropId(sid);
     const wasInVoice = (this.lkSids.get(sid)?.sids.length ?? 0) > 0;
-    if (wasInVoice && others.length) {
+    if (wasInVoice && chimeOthers.length) {
       const bySid = new Map<string, Client>();
       for (const c of this.clients) bySid.set(c.sessionId, c);
-      for (const otherId of others) bySid.get(otherId)?.send("prox:leave", { sid, name });
+      for (const otherId of chimeOthers) bySid.get(otherId)?.send("prox:leave", { sid, name });
     }
     this.lkSids.delete(sid);
     for (const key of [...this.appliedSubs.keys()]) {

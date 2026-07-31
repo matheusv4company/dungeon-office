@@ -26,6 +26,13 @@ export type AudPair = { a: string; b: string };
 export const AUD_ENTER = 200;
 /** Raio pra PARAR de ouvir (desassinar). Maior que o de entrada = histerese. */
 export const AUD_EXIT = 260;
+/**
+ * Raios do AVISO SONORO (F2) — bem mais curtos que os da assinatura: o "ding" toca
+ * quando a pessoa chega DE VERDADE perto (pedido do dono: entra a 2,5 tiles, sai a 3).
+ * A assinatura continua no raio largo (o áudio precisa estar pronto antes do fade).
+ */
+export const CHIME_ENTER = 80; // 2,5 tiles
+export const CHIME_EXIT = 96; // 3 tiles
 
 // ---- geometria do mapa (ESPELHA client/src/scenes/OfficeScene.ts — manter em sincronia!) ----
 // Derivada com as MESMAS fórmulas do cliente (nada de número mágico solto) pra qualquer
@@ -71,23 +78,29 @@ export function pairKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
-/** true se o par deve FICAR/FICAR audível dado o estado atual (histerese). */
-function pairAudible(a: AudPoint, b: AudPoint, wasAudible: boolean): boolean {
-  if (floorOfY(a.y) !== floorOfY(b.y)) return false;
-  const za = zoneAt(a.x, a.y);
-  const zb = zoneAt(b.x, b.y);
-  if (za >= 0 || zb >= 0) return za === zb; // zona fechada: só mesma zona
-  const d = Math.hypot(a.x - b.x, a.y - b.y);
-  return d <= (wasAudible ? AUD_EXIT : AUD_ENTER);
-}
-
 /**
  * Mantém o conjunto de pares audíveis entre ticks (necessário pra histerese) e
- * devolve os DELTAS de cada recomputo — que viram assinaturas no LiveKit e os
- * eventos prox:enter/prox:leave (F2).
+ * devolve os DELTAS de cada recomputo. Usado em DUAS instâncias no OfficeRoom:
+ * uma com os raios largos (assinaturas no LiveKit) e uma com os raios curtos
+ * (CHIME_ENTER/EXIT — os avisos sonoros prox:enter/prox:leave da F2).
  */
 export class AudibilityEngine {
   private audible = new Set<string>(); // pairKey dos pares atualmente audíveis
+
+  constructor(
+    private enterDist: number = AUD_ENTER,
+    private exitDist: number = AUD_EXIT,
+  ) {}
+
+  /** true se o par deve ENTRAR/FICAR audível dado o estado atual (histerese). */
+  private pairAudible(a: AudPoint, b: AudPoint, wasAudible: boolean): boolean {
+    if (floorOfY(a.y) !== floorOfY(b.y)) return false;
+    const za = zoneAt(a.x, a.y);
+    const zb = zoneAt(b.x, b.y);
+    if (za >= 0 || zb >= 0) return za === zb; // zona fechada: só mesma zona
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    return d <= (wasAudible ? this.exitDist : this.enterDist);
+  }
 
   /** Recomputa tudo. Devolve quais pares ENTRARAM e SAÍRAM da audibilidade. */
   tick(players: AudPoint[]): { enters: AudPair[]; leaves: AudPair[] } {
@@ -101,7 +114,7 @@ export class AudibilityEngine {
         const key = pairKey(a.id, b.id);
         seen.add(key);
         const was = this.audible.has(key);
-        const is = pairAudible(a, b, was);
+        const is = this.pairAudible(a, b, was);
         if (is && !was) {
           this.audible.add(key);
           enters.push({ a: a.id, b: b.id });
