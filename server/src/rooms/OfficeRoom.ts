@@ -29,7 +29,7 @@ import { AudibilityEngine, zoneAt, CHIME_ENTER, CHIME_EXIT, type AudPoint } from
 import { LkSubscriptions, type AudioSids } from "../voice/subscriptions";
 import { issueVoiceNonce, revokeVoiceNonce } from "../voice/nonces";
 import { MeetingScribe, type MeetingSession } from "../meetings/scribe";
-import { summarizeMeeting, appendMeetingLog } from "../meetings/summarize";
+import { summarizeMeeting, appendMeetingLog, readMeetingLog } from "../meetings/summarize";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; authToken?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -639,6 +639,25 @@ export class OfficeRoom extends Room<OfficeState> {
       this.clock.setInterval(() => this.scribeTick(), 1000);
     }
 
+    // Painel "📋 Atas": lista as atas gravadas (só membro logado; transcript BRUTO
+    // nunca sai — só o resumo estruturado).
+    this.onMessage("atas:list", (client) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || !p.memberId) {
+        client.send("atas:list", { atas: [] });
+        return;
+      }
+      const atas = readMeetingLog(50).map((m) => ({
+        startedAt: m.startedAt,
+        endedAt: m.endedAt,
+        zone: m.zone,
+        speakers: m.speakers,
+        utterances: m.utterances,
+        ata: m.ata, // null = resumo falhou naquele dia (o bruto fica só no servidor)
+      }));
+      client.send("atas:list", { atas });
+    });
+
     // ---------- F7 (V2): emoji flutuante ----------
     // Whitelist + rate limit por cliente; broadcast pra todos renderizarem em cima do autor.
     this.onMessage("emote", (client, msg: { e?: string }) => {
@@ -724,7 +743,12 @@ export class OfficeRoom extends Room<OfficeState> {
   private async finishMeeting(s: MeetingSession): Promise<void> {
     const words = s.utterances.reduce((n, u) => n + u.text.split(/\s+/).length, 0);
     if (words < 30) return; // conversa curta/ruído — sem ata
-    const ata = await summarizeMeeting(s.utterances);
+    // listas registradas: o modelo só pode apontar responsável/cliente que EXISTE
+    const knownMembers: string[] = [];
+    this.state.memberColors.forEach((_c, nome) => knownMembers.push(nome));
+    const knownClients: string[] = [];
+    this.state.clientColors.forEach((_c, nome) => knownClients.push(nome));
+    const ata = await summarizeMeeting(s.utterances, knownMembers, knownClients);
     if (!ata) {
       // IA fora/timeout: NUNCA descarta o transcript — grava o bruto no log pra
       // recuperar depois (e avisa no log do servidor).
@@ -741,34 +765,29 @@ export class OfficeRoom extends Room<OfficeState> {
       return;
     }
     if (!ata.resumo) return; // a IA disse "não era reunião de trabalho" — sem ata mesmo
-    const ZONE_NAMES = ["azul", "vermelha", "dourada"];
     // datas no fuso do TIME (o servidor roda em UTC no Coolify)
     const agora = new Date();
     const dd = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" }).format(agora);
     const hh = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" }).format(agora);
-    const desc = [
-      `Sala ${ZONE_NAMES[s.zone] ?? s.zone} · participantes: ${[...s.speakers].join(", ") || "—"}`,
-      "",
-      "RESUMO:",
-      ata.resumo,
-    ]
-      .concat(ata.decisoes.length ? ["", "DECISÕES:", ...ata.decisoes.map((x) => `• ${x}`)] : [])
-      .join("\n");
-    this.createScribeTask(`📋 Ata — ${dd} ${hh}`, desc, "", "", true); // ata no TOPO da coluna
-    // responsável só quando o nome dito bate com um membro REGISTRADO (normId) — a IA
-    // nunca atribui tarefa pra nome que não existe no quadro.
-    const known = new Map<string, string>();
-    this.state.memberColors.forEach((_c, nome) => known.set(normId(nome), nome));
+    // A ATA não vira card no gestor — mora no painel "📋 Atas" (meetings.json).
+    // Só as TAREFAS entram no quadro. Responsável/cliente apenas se o nome dito bate
+    // com um REGISTRADO (normId) — a IA nunca cria nome novo no quadro.
+    const knownM = new Map<string, string>();
+    this.state.memberColors.forEach((_c, nome) => knownM.set(normId(nome), nome));
+    const knownC = new Map<string, string>();
+    this.state.clientColors.forEach((_c, nome) => knownC.set(normId(nome), nome));
     for (const t of ata.tarefas) {
-      const assignee = known.get(normId(t.responsavel)) ?? "";
+      const assignee = knownM.get(normId(t.responsavel)) ?? "";
+      const cliente = knownC.get(normId(t.cliente)) ?? ""; // sem menção -> SEM cliente
       this.createScribeTask(
         `🤖 ${t.titulo}`,
         `Criada automaticamente pela ata da reunião de ${dd} ${hh}. Confere e ajusta o que precisar.`,
         assignee,
         t.due,
+        cliente,
       );
     }
-    this.persistBoard();
+    if (ata.tarefas.length) this.persistBoard();
     appendMeetingLog({
       startedAt: s.startedAt,
       endedAt: Date.now(),
@@ -782,32 +801,26 @@ export class OfficeRoom extends Room<OfficeState> {
   }
 
   /**
-   * Cria um card vindo da ata (client "Reunião", coluna A Fazer). O card-ATA vai pro
-   * TOPO da coluna (senão se perde no fim de uma lista longa e "a ata sumiu"); as
-   * tarefas 🤖 vão pro fim, como tarefas normais.
+   * Cria uma TAREFA vinda da ata (coluna A Fazer, fim da coluna). Cliente/responsável
+   * já vêm validados contra os registrados (vazio = sem cliente/sem responsável).
    */
-  private createScribeTask(title: string, desc: string, assignee: string, due: string, atTop = false): void {
+  private createScribeTask(title: string, desc: string, assignee: string, due: string, client = ""): void {
     const t = new Task();
     t.id = `t${Date.now().toString(36)}${(this.taskSeq++).toString(36)}`;
     t.title = title.slice(0, 200);
     t.desc = desc.slice(0, 4000);
     t.assignee = assignee.slice(0, 60);
-    t.client = "Reunião";
+    t.client = client.slice(0, 60);
     t.due = due.slice(0, 10);
     t.createdAt = Date.now();
     this.markColumn(t, "afazer");
     t.col = "afazer";
-    let minOrder = Infinity;
     let maxOrder = -1;
     this.state.tasks.forEach((x) => {
-      if (x.col !== "afazer") return;
-      if (x.order > maxOrder) maxOrder = x.order;
-      if (x.order < minOrder) minOrder = x.order;
+      if (x.col === "afazer" && x.order > maxOrder) maxOrder = x.order;
     });
-    t.order = atTop ? (minOrder === Infinity ? 0 : minOrder - 1) : maxOrder + 1;
+    t.order = maxOrder + 1;
     this.state.tasks.set(t.id, t);
-    this.register(this.state.clientColors, t.client);
-    if (assignee) this.register(this.state.memberColors, assignee);
   }
 
   // ---------- F1: audibilidade — tick, eventos de proximidade e reconciliação ----------

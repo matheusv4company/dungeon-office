@@ -5,10 +5,11 @@ import type { Room } from "../net/room";
 import { VoiceManager } from "../net/voice";
 import { KanbanBoard } from "../ui/kanban";
 import { VaultPanel, type EntryPub } from "../ui/vault";
+import { AtasPanel, type AtaView } from "../ui/atas";
 import { loadMember } from "../auth/login";
 import { getFlags, getVaultEnabled } from "../net/config";
 import { COLLISION } from "../mapCollision";
-import { playProxChime } from "../audio/chime";
+import { playProxChime, playHitSound, playDeathSound } from "../audio/chime";
 import { SpeechScribe } from "../net/scribe";
 import { daysToDue } from "../util/overdue";
 
@@ -197,6 +198,8 @@ export class OfficeScene extends Phaser.Scene {
   private gestorBtn?: Phaser.GameObjects.Text;
   private vault?: VaultPanel; // Central de Senhas (cofre — overlay)
   private vaultBtn?: Phaser.GameObjects.Text;
+  private atas?: AtasPanel; // 📋 Atas das reuniões (overlay)
+  private atasBtn?: Phaser.GameObjects.Text;
 
   // HP / dano / morte
   private dead = false;
@@ -290,6 +293,9 @@ export class OfficeScene extends Phaser.Scene {
     this.kanban?.destroy();
     this.kanban = undefined;
     this.gestorBtn = undefined;
+    this.atas?.destroy();
+    this.atas = undefined;
+    this.atasBtn = undefined;
     this.emoteBar?.remove();
     this.emoteBar = undefined;
     this.scribe?.setActive(false);
@@ -594,6 +600,7 @@ export class OfficeScene extends Phaser.Scene {
       this.setupShareButton();
       this.setupGestorButton();
       this.setupVaultButton(); // 🔐 Central de Senhas (só cria o botão se o cofre estiver ligado)
+      this.setupAtasButton(); // 📋 Atas das reuniões
       this.setupMicButton();
       this.setupHandButton();
       this.wireRoom(room, name, x, y);
@@ -639,6 +646,7 @@ export class OfficeScene extends Phaser.Scene {
     }
     this.setupKanban(room);
     this.setupVault(room);
+    this.setupAtas(room);
     this.setupEmoteBar();
     // F7 (V2): emoji flutuante em cima do autor (o servidor valida whitelist + rate limit)
     room.onMessage("emote", (m: { sid?: string; e?: string }) => {
@@ -688,7 +696,9 @@ export class OfficeScene extends Phaser.Scene {
       if (floorOfY(m.y) === this.currentFloor) this.spawnFireball(m.x, m.y, m.dir);
     });
     room.onMessage("died", () => {
-      if (this.room === room) this.onDied();
+      if (this.room !== room) return;
+      playDeathSound(); // som LOCAL de morte (só quem morreu ouve)
+      this.onDied();
     });
     // F3: feedback PRIVADO da IA sobre a MINHA entrega (só eu recebo). Toast acima do kanban.
     room.onMessage(
@@ -856,6 +866,47 @@ export class OfficeScene extends Phaser.Scene {
       }
     };
     if (wasOpen) this.vault.open();
+  }
+
+  /** Painel "📋 Atas" — mesmo cuidado de input do vault/kanban. */
+  private setupAtas(room: Room) {
+    if (!getFlags().meetingScribe) return;
+    const wasOpen = this.atas?.isOpen() ?? false;
+    this.atas?.destroy();
+    this.atas = new AtasPanel(room);
+    this.atas.onOpenChange = (open) => {
+      if (open) {
+        this.input.enabled = false;
+      } else {
+        this.time.delayedCall(150, () => {
+          if (!this.atas?.isOpen()) this.input.enabled = true;
+        });
+      }
+    };
+    room.onMessage("atas:list", (m: { atas?: AtaView[] }) => {
+      if (this.room !== room) return;
+      this.atas?.onList(Array.isArray(m?.atas) ? m.atas : []);
+    });
+    if (wasOpen) this.atas.open();
+  }
+
+  private setupAtasButton() {
+    if (this.atasBtn || !getFlags().meetingScribe) return;
+    const btn = this.add
+      .text(this.scale.width - 16, 232, "📋 Atas", {
+        fontFamily: "monospace",
+        fontSize: "14px",
+        color: "#ffffff",
+        backgroundColor: "#2a5a46",
+        padding: { x: 9, y: 6 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(UI_DEPTH)
+      .setInteractive({ useHandCursor: true });
+    this.atasBtn = btn;
+    this.hudLayer?.add(btn);
+    btn.on("pointerdown", () => this.atas?.toggle());
   }
 
   private setupVaultButton() {
@@ -3293,7 +3344,7 @@ export class OfficeScene extends Phaser.Scene {
 
     // com o gestor de tarefas OU a central de senhas aberta, o teclado e do overlay DOM
     // (nao move o boneco; libera digitar nos inputs)
-    const uiOpen = (this.kanban?.isOpen() ?? false) || (this.vault?.isOpen() ?? false);
+    const uiOpen = (this.kanban?.isOpen() ?? false) || (this.vault?.isOpen() ?? false) || (this.atas?.isOpen() ?? false);
     const jx = uiOpen ? 0 : this.joyVec.x;
     const jy = uiOpen ? 0 : this.joyVec.y;
     const J = 0.28; // zona morta do joystick
@@ -3402,7 +3453,11 @@ export class OfficeScene extends Phaser.Scene {
       // meu HP (detecta dano pra mostrar a barra)
       const meState = state.players?.get(this.sessionId);
       if (meState && typeof meState.hp === "number") {
-        if (meState.hp < this.myHp) this.myDmgAt = this.time.now;
+        if (meState.hp < this.myHp) {
+          this.myDmgAt = this.time.now;
+          // som LOCAL de dano (só eu ouço); a morte tem o próprio som no "died"
+          if (meState.hp > 0) playHitSound();
+        }
         this.myHp = meState.hp;
         if (typeof meState.maxHp === "number" && meState.maxHp > 0) this.myMaxHp = meState.maxHp;
         // F8: cosmético do meu avatar (título no nome + tint de prestígio) — só muda no level-change
@@ -3537,6 +3592,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.micBtn) this.micBtn.setPosition(this.scale.width - 16, 124);
     if (this.handBtn) this.handBtn.setPosition(this.scale.width - 16, 160);
     if (this.vaultBtn) this.vaultBtn.setPosition(this.scale.width - 16, 196);
+    if (this.atasBtn) this.atasBtn.setPosition(this.scale.width - 16, 232);
     if (this.fireBtn) this.fireBtn.setPosition(this.scale.width - 22, this.scale.height - 22);
     if (this.isTouch) this.handlePinch();
     if (this.voice.sharing !== this.lastSharing) {

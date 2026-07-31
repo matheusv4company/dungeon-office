@@ -56,3 +56,37 @@ export function playProxChime(entered: boolean): void {
     tone(ac, 660, t0 + 0.1, 0.12, VOL);
   }
 }
+
+/** Um tom com queda de frequência (efeito de impacto/queda). */
+function slide(ac: AudioContext, from: number, to: number, at: number, dur: number, vol: number, type: OscillatorType): void {
+  const osc = ac.createOscillator();
+  const g = ac.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(from, at);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(1, to), at + dur);
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(vol, at + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  osc.connect(g).connect(ac.destination);
+  osc.start(at);
+  osc.stop(at + dur + 0.02);
+}
+
+/** Levei DANO (bola de fogo): "thud" curto e grave — só o atingido ouve (som local). */
+export function playHitSound(): void {
+  const ac = ensureCtx();
+  if (!ac) return;
+  const t0 = ac.currentTime + 0.005;
+  slide(ac, 220, 70, t0, 0.16, 0.22, "sawtooth");
+  slide(ac, 440, 140, t0, 0.1, 0.1, "square");
+}
+
+/** MORRI: queda longa em tons menores — só quem morreu ouve (som local). */
+export function playDeathSound(): void {
+  const ac = ensureCtx();
+  if (!ac) return;
+  const t0 = ac.currentTime + 0.005;
+  slide(ac, 392, 98, t0, 0.7, 0.16, "triangle"); // sol -> sol grave
+  tone(ac, 233, t0 + 0.18, 0.22, 0.1); // sib menor no meio da queda
+  tone(ac, 147, t0 + 0.42, 0.3, 0.12); // ré grave fechando
+}

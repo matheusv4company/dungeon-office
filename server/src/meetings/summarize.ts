@@ -10,14 +10,20 @@ import type { Utterance } from "./scribe";
 
 const MODEL = "claude-haiku-4-5-20251001"; // mesmo modelo aprovado do aiReview
 
-export type AtaTarefa = { titulo: string; responsavel: string; due: string };
+export type AtaTarefa = { titulo: string; responsavel: string; due: string; cliente: string };
 export type Ata = { resumo: string; decisoes: string[]; tarefas: AtaTarefa[] };
 
 /**
  * Resume o transcript e extrai decisões + tarefas acionáveis. null em qualquer falha
  * (sem chave, API fora, parse) — quem chama simplesmente não cria a ata.
+ * `knownMembers`/`knownClients` = nomes REGISTRADOS no quadro: o modelo só pode usar
+ * esses (o servidor ainda revalida via normId — nome inventado vira vazio).
  */
-export async function summarizeMeeting(utterances: Utterance[]): Promise<Ata | null> {
+export async function summarizeMeeting(
+  utterances: Utterance[],
+  knownMembers: string[] = [],
+  knownClients: string[] = [],
+): Promise<Ata | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
   try {
@@ -46,9 +52,14 @@ export async function summarizeMeeting(utterances: Utterance[]): Promise<Ata | n
       "Voce e a secretaria de atas de uma agencia de marketing brasileira. Recebe a transcricao " +
       "automatica (imperfeita) de uma reuniao por voz do time. Produza APENAS um JSON valido:\n" +
       '{"resumo": "resumo fiel em 3-6 frases", "decisoes": ["decisao tomada", ...], ' +
-      '"tarefas": [{"titulo": "acao concreta e curta", "responsavel": "nome de quem ficou responsavel ou vazio", "due": "YYYY-MM-DD ou vazio"}]}\n' +
+      '"tarefas": [{"titulo": "acao concreta e curta", "responsavel": "nome de quem ficou responsavel ou vazio", ' +
+      '"cliente": "cliente da tarefa ou vazio", "due": "YYYY-MM-DD ou vazio"}]}\n' +
+      `MEMBROS registrados (unicos valores validos pra "responsavel"): ${knownMembers.join(", ") || "(nenhum)"}. ` +
+      `CLIENTES registrados (unicos valores validos pra "cliente"): ${knownClients.join(", ") || "(nenhum)"}.\n` +
       "REGRAS: so liste tarefas que alguem claramente se comprometeu a fazer (nao invente); " +
-      "responsavel = o NOME dito na conversa (vazio se ambigel); due so se uma data/prazo foi dito; " +
+      "responsavel = o NOME dito na conversa (vazio se ambiguo); cliente SO se a tarefa foi claramente " +
+      "associada a um cliente registrado na conversa (vazio se nao mencionaram cliente); " +
+      "due so se uma data/prazo foi dito; " +
       "a transcricao tem erros de reconhecimento — interprete com bom senso; se a conversa nao foi " +
       'uma reuniao de trabalho, devolva {"resumo": "", "decisoes": [], "tarefas": []}.';
     const resp = await client.messages.create(
@@ -71,6 +82,7 @@ export async function summarizeMeeting(utterances: Utterance[]): Promise<Ata | n
       .map((t) => ({
         titulo: String((t as AtaTarefa)?.titulo ?? "").trim().slice(0, 180),
         responsavel: String((t as AtaTarefa)?.responsavel ?? "").trim().slice(0, 60),
+        cliente: String((t as AtaTarefa)?.cliente ?? "").trim().slice(0, 60),
         due: /^\d{4}-\d{2}-\d{2}$/.test(String((t as AtaTarefa)?.due ?? "")) ? String((t as AtaTarefa).due) : "",
       }))
       .filter((t) => t.titulo);
@@ -134,6 +146,18 @@ export type MeetingLogEntry = {
   ata: Ata | null;
   raw?: Utterance[]; // transcript bruto, gravado SÓ quando a ata falhou (nada se perde)
 };
+
+/** Lê as últimas `limit` atas do log (mais recentes primeiro). Falha -> []. */
+export function readMeetingLog(limit = 50): MeetingLogEntry[] {
+  try {
+    const raw = readFileSync(FILE, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as MeetingLogEntry[]).slice(-limit).reverse();
+  } catch {
+    return []; // sem arquivo ainda / corrompido
+  }
+}
 
 /** Anexa uma ata ao log (escrita atômica; falha só loga — ata já foi pro board). */
 export function appendMeetingLog(entry: MeetingLogEntry): void {
