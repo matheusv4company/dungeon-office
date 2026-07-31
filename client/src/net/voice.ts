@@ -7,6 +7,7 @@ import type {
   RemoteVideoTrack,
 } from "livekit-client";
 import { SERVER_HTTP_URL } from "./room";
+import { getFlags } from "./config";
 
 export type Vec = { x: number; y: number };
 export type MicDevice = { deviceId: string; label: string };
@@ -15,6 +16,8 @@ type ShareEntry = {
   track: RemoteVideoTrack;
   card: HTMLDivElement;
   video: HTMLVideoElement;
+  title: HTMLSpanElement;
+  name: string;
   visible: boolean;
   minimized: boolean;
 };
@@ -32,6 +35,9 @@ export class VoiceManager {
   private tracks = new Map<string, RemoteAudioTrack>();
   private els = new Map<string, HTMLMediaElement>();
   private shares = new Map<string, ShareEntry>();
+  // F3: áudio do compartilhamento de tela — FORA do fade de proximidade (toca cheio
+  // pra quem está vendo o share; a entrega da track já é gated pelo motor da F1).
+  private shareAudioEls = new Map<string, HTMLMediaElement>();
   private sharePanel?: HTMLDivElement;
   private selfShare?: { card: HTMLDivElement; video: HTMLVideoElement };
   private micDeviceId: string | undefined = (() => {
@@ -63,7 +69,15 @@ export class VoiceManager {
     const room = new Room({ adaptiveStream: true, dynacast: true });
 
     room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub, p: RemoteParticipant) => {
-      if (track.kind === Track.Kind.Audio) {
+      if (track.source === Track.Source.ScreenShareAudio) {
+        // F3: áudio do share — toca CHEIO (não passa pelo fade de proximidade da voz);
+        // a entrega da track já é decidida pelo motor de audibilidade do servidor.
+        const el = track.attach();
+        el.style.display = "none";
+        document.body.appendChild(el);
+        this.shareAudioEls.set(p.identity, el);
+        this.markShareAudio(p.identity, true);
+      } else if (track.kind === Track.Kind.Audio) {
         const at = track as RemoteAudioTrack;
         this.tracks.set(p.identity, at);
         const el = at.attach();
@@ -77,7 +91,11 @@ export class VoiceManager {
     });
 
     room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, _pub, p: RemoteParticipant) => {
-      if (track.kind === Track.Kind.Audio) {
+      if (track.source === Track.Source.ScreenShareAudio) {
+        this.shareAudioEls.get(p.identity)?.remove();
+        this.shareAudioEls.delete(p.identity);
+        this.markShareAudio(p.identity, false);
+      } else if (track.kind === Track.Kind.Audio) {
         this.els.get(p.identity)?.remove();
         this.els.delete(p.identity);
         this.tracks.delete(p.identity);
@@ -90,6 +108,8 @@ export class VoiceManager {
       this.els.get(p.identity)?.remove();
       this.els.delete(p.identity);
       this.tracks.delete(p.identity);
+      this.shareAudioEls.get(p.identity)?.remove();
+      this.shareAudioEls.delete(p.identity);
       this.removeShare(p.identity);
     });
 
@@ -172,7 +192,9 @@ export class VoiceManager {
       //   derrubando FPS (tela e quase estatica) em vez de borrar a imagem.
       await this.room.localParticipant.setScreenShareEnabled(
         true,
-        { audio: false, contentHint: "detail" },
+        // F3: com o flag ligado, pede também o ÁUDIO (aba do Chrome / sistema no Windows).
+        // Se o usuário não marcar "compartilhar áudio", só o vídeo é publicado — sem erro.
+        { audio: getFlags().shareAudio, systemAudio: "include", contentHint: "detail" },
         {
           simulcast: false,
           degradationPreference: "maintain-resolution",
@@ -211,6 +233,8 @@ export class VoiceManager {
     this.els.get(id)?.remove();
     this.els.delete(id);
     this.tracks.delete(id);
+    this.shareAudioEls.get(id)?.remove();
+    this.shareAudioEls.delete(id);
   }
 
   applyShareVisibility(shouldShow: (identity: string) => boolean): void {
@@ -220,6 +244,11 @@ export class VoiceManager {
         s.visible = show;
         s.card.style.display = show ? "block" : "none";
       }
+    });
+    // F3: "quem VÊ o share, ouve o share" — áudio do share muta junto com o card.
+    this.shareAudioEls.forEach((el, id) => {
+      const s = this.shares.get(id);
+      (el as HTMLAudioElement).muted = !(s?.visible ?? false);
     });
     this.updatePanelDisplay();
   }
@@ -251,6 +280,8 @@ export class VoiceManager {
     this.els.forEach((el) => el.remove());
     this.els.clear();
     this.tracks.clear();
+    this.shareAudioEls.forEach((el) => el.remove());
+    this.shareAudioEls.clear();
     this.shares.forEach((s) => {
       try {
         s.track.detach();
@@ -301,7 +332,8 @@ export class VoiceManager {
       "font:13px monospace;color:#f0e6c8;display:flex;justify-content:space-between;" +
       "align-items:center;gap:12px;margin-bottom:6px;";
     const title = document.createElement("span");
-    title.textContent = "🖥️ " + name + " está compartilhando";
+    title.textContent =
+      "🖥️ " + name + " está compartilhando" + (this.shareAudioEls.has(id) ? " 🔊" : "");
     const fsBtn = document.createElement("button");
     fsBtn.textContent = "⛶ Tela cheia";
     fsBtn.style.cssText =
@@ -337,7 +369,14 @@ export class VoiceManager {
     video.onclick = fs;
     card.append(header, video);
     panel.appendChild(card);
-    this.shares.set(id, { track, card, video, visible: false, minimized: false });
+    this.shares.set(id, { track, card, video, title, name, visible: false, minimized: false });
+  }
+
+  /** F3: liga/desliga o indicador 🔊 no card do share (áudio pode chegar antes/depois do vídeo). */
+  private markShareAudio(id: string, hasAudio: boolean): void {
+    const s = this.shares.get(id);
+    if (!s) return;
+    s.title.textContent = "🖥️ " + s.name + " está compartilhando" + (hasAudio ? " 🔊" : "");
   }
 
   private removeShare(id: string): void {

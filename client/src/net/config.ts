@@ -17,6 +17,7 @@ export type GamifFlags = {
   paintedMap: boolean; // re-skin: fundos pintados dos 3 andares
   audioAuth: boolean; // F1 V2 — audibilidade server-side (assinaturas forcadas no LiveKit)
   proxSound: boolean; // F2 V2 — aviso sonoro de entrada/saida do alcance de voz
+  shareAudio: boolean; // F3 V2 — compartilhamento de tela com AUDIO (aba/sistema)
 };
 
 // Default: tudo LIGADO (mesmo default do servidor). Se o /config falhar no boot, o jogo
@@ -35,6 +36,7 @@ const TODOS_ON: GamifFlags = {
   paintedMap: true,
   audioAuth: true,
   proxSound: true,
+  shareAudio: true,
 };
 
 let flags: GamifFlags = { ...TODOS_ON };

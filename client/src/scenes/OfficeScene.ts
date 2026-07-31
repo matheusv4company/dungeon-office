@@ -120,6 +120,7 @@ export class OfficeScene extends Phaser.Scene {
   private remotes = new Map<string, Remote>();
   private remoteBodies?: Phaser.Physics.Arcade.Group; // corpos de colisão dos remotos (personagem↔personagem)
   private proxChimeAt = new Map<string, number>(); // F2: último aviso sonoro por pessoa (cooldown)
+  private shareAudioHintShown = false; // F3: dica de share com som (1x por sessão)
   private lastSent = 0;
   private lastDir = 0;
 
@@ -997,8 +998,18 @@ export class OfficeScene extends Phaser.Scene {
           btn.setText("🖥️ conectando…").setBackgroundColor("#555");
           await this.voice.connect(this.sessionId, loadSelection().name || "Convidado");
         }
-        if (!this.voice.sharing) await this.voice.startScreenShare();
-        else await this.voice.stopScreenShare();
+        if (!this.voice.sharing) {
+          // F3: dica de como ter SOM no share (o picker do navegador abre em seguida)
+          if (getFlags().shareAudio && !this.shareAudioHintShown) {
+            this.shareAudioHintShown = true;
+            this.showToast(
+              "💡 Pra compartilhar COM SOM: escolha \"Guia do Chrome\" e marque \"Compartilhar áudio da guia\"",
+              "#33445a",
+              6000,
+            );
+          }
+          await this.voice.startScreenShare();
+        } else await this.voice.stopScreenShare();
       } catch (e) {
         console.warn("[share] erro", e);
       }

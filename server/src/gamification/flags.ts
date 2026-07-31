@@ -18,6 +18,7 @@ export type GamifFlags = {
   paintedMap: boolean; // re-skin: fundos pintados (nano banana) dos 3 andares no lugar dos tiles
   audioAuth: boolean; // F1 V2 — audibilidade server-side (assinaturas forcadas no LiveKit)
   proxSound: boolean; // F2 V2 — aviso sonoro de entrada/saida do alcance de voz
+  shareAudio: boolean; // F3 V2 — compartilhamento de tela com AUDIO (aba/sistema)
 };
 
 // Desliga com "0", "false", "off" ou "no" (qualquer caixa); qualquer outro valor —
@@ -50,5 +51,6 @@ export function getFlags(): GamifFlags {
     // infra de VOZ, NÃO gated pelo GAMIF_ALL: desliga com AUDIO_AUTH=0 (volta ao fade-só-cliente)
     audioAuth: ligado("AUDIO_AUTH"),
     proxSound: ligado("PROX_SOUND"),
+    shareAudio: ligado("SHARE_AUDIO"),
   };
 }
