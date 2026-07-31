@@ -16,6 +16,7 @@ export type GamifFlags = {
   novaEra: boolean; // NE — mudanca estetica da nova fase (Nucleo, cripta ascendida, cristal)
   paintedMap: boolean; // re-skin: fundos pintados dos 3 andares
   audioAuth: boolean; // F1 V2 — audibilidade server-side (assinaturas forcadas no LiveKit)
+  proxSound: boolean; // F2 V2 — aviso sonoro de entrada/saida do alcance de voz
 };
 
 // Default: tudo LIGADO (mesmo default do servidor). Se o /config falhar no boot, o jogo
@@ -33,6 +34,7 @@ const TODOS_ON: GamifFlags = {
   novaEra: true,
   paintedMap: true,
   audioAuth: true,
+  proxSound: true,
 };
 
 let flags: GamifFlags = { ...TODOS_ON };

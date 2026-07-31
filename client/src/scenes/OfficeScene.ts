@@ -8,6 +8,7 @@ import { VaultPanel, type EntryPub } from "../ui/vault";
 import { loadMember } from "../auth/login";
 import { getFlags, getVaultEnabled } from "../net/config";
 import { COLLISION } from "../mapCollision";
+import { playProxChime } from "../audio/chime";
 import { daysToDue } from "../util/overdue";
 
 const T = 32;
@@ -118,6 +119,7 @@ export class OfficeScene extends Phaser.Scene {
   private room?: Room;
   private remotes = new Map<string, Remote>();
   private remoteBodies?: Phaser.Physics.Arcade.Group; // corpos de colisão dos remotos (personagem↔personagem)
+  private proxChimeAt = new Map<string, number>(); // F2: último aviso sonoro por pessoa (cooldown)
   private lastSent = 0;
   private lastDir = 0;
 
@@ -262,6 +264,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.voiceBgTimer) clearInterval(this.voiceBgTimer);
     this.voiceBgTimer = undefined;
     this.lastPosAt.clear();
+    this.proxChimeAt.clear();
     this.prevHand.clear();
     this.personMenuClose?.(); // fecha + remove o listener (nao so o no DOM)
     this.kanban?.destroy();
@@ -646,6 +649,17 @@ export class OfficeScene extends Phaser.Scene {
         this.showAiFeedback(String(m?.status ?? ""), Number(m?.score ?? -1), String(m?.note ?? ""));
       },
     );
+    // F2 (V2): aviso sonoro de proximidade — o SERVIDOR decide quando alguém entrou/saiu
+    // do alcance da voz (mesmos eventos que controlam as assinaturas de áudio da F1, então
+    // o som NUNCA diverge do que você realmente ouve). Cooldown por pessoa contra flap.
+    room.onMessage("prox:enter", (m: { sid?: string; name?: string }) => {
+      if (this.room !== room) return;
+      this.proxChime(String(m?.sid ?? ""), true);
+    });
+    room.onMessage("prox:leave", (m: { sid?: string; name?: string }) => {
+      if (this.room !== room) return;
+      this.proxChime(String(m?.sid ?? ""), false);
+    });
     // Cofre (Central de Senhas): repassa as respostas do servidor pro painel. Guard padrão
     // (this.room !== room) evita handler de sala antiga disparar após reconexão.
     room.onMessage("vault:list", (m: { entries?: EntryPub[] }) => {
@@ -2981,6 +2995,16 @@ export class OfficeScene extends Phaser.Scene {
    * congela), entao da pra atenuar quem se afasta (sem vazar) e manter quem esta
    * perto audivel — sem precisar mutar tudo.
    */
+  /** F2: aviso sonoro "alguém chegou/saiu do alcance da voz", com cooldown por pessoa. */
+  private proxChime(sid: string, entered: boolean): void {
+    if (!sid || sid === this.sessionId) return;
+    if (!getFlags().proxSound) return;
+    const now = performance.now();
+    if (now - (this.proxChimeAt.get(sid) ?? 0) < 2000) return; // anti-flap por pessoa
+    this.proxChimeAt.set(sid, now);
+    playProxChime(entered);
+  }
+
   private recomputeVoiceProximity() {
     if (!this.voice.connected) return;
     const state = this.room?.state as unknown as { players?: { get(id: string): any } } | undefined;
