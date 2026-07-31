@@ -574,10 +574,22 @@ export class OfficeScene extends Phaser.Scene {
     this.room = room;
     this.sessionId = room.sessionId;
     this.reconnecting = false;
+    // F1: sempre que a voz (re)conectar no LiveKit, avisa o servidor pra ele
+    // ressincronizar as assinaturas de áudio deste participante (motor de audibilidade).
+    this.voice.onReady = () => {
+      try {
+        this.room?.send("voice:ready", {});
+      } catch {
+        /* sala caiu no meio — o refresh periódico do servidor cobre */
+      }
+    };
     // Se a voz ja estava ligada e o sessionId mudou (reconexao), reconecta a voz
     // com a nova identidade — senao ela "some" pra todos por mismatch de ID.
     if (this.voice.connected && this.voice.getIdentity() !== room.sessionId) {
       void this.voice.reconnect(room.sessionId, name).catch(() => {});
+    } else if (this.voice.connected) {
+      // reconexão do COLYSEUS com a voz já de pé: ressincroniza as assinaturas também
+      this.voice.onReady?.();
     }
     this.setupKanban(room);
     this.setupVault(room);

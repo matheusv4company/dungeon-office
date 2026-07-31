@@ -45,6 +45,11 @@ export class VoiceManager {
   micEnabled = false;
   sharing = false;
   private connectedIdentity?: string; // identidade no LiveKit (= sessionId atual do Colyseus)
+  /**
+   * F1: chamado quando a voz fica pronta (connect E reconexões do LiveKit). A cena
+   * usa pra mandar "voice:ready" pro servidor ressincronizar as assinaturas de áudio.
+   */
+  onReady?: () => void;
 
   async connect(identity: string, displayName: string): Promise<void> {
     if (this.connected) return;
@@ -95,10 +100,14 @@ export class VoiceManager {
       }
     });
 
+    // reconexão do LiveKit (rede piscou): o servidor precisa re-aplicar as assinaturas
+    room.on(RoomEvent.Reconnected, () => this.onReady?.());
+
     await room.connect(data.url, data.token);
     this.room = room;
     this.connected = true;
     this.connectedIdentity = identity;
+    this.onReady?.();
   }
 
   getIdentity(): string | undefined {

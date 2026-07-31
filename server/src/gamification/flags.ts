@@ -16,6 +16,7 @@ export type GamifFlags = {
   social: boolean; // F9 — streak de time / cooperacao
   novaEra: boolean; // NE — mudanca estetica da nova fase (Nucleo, cripta ascendida, cristal)
   paintedMap: boolean; // re-skin: fundos pintados (nano banana) dos 3 andares no lugar dos tiles
+  audioAuth: boolean; // F1 V2 — audibilidade server-side (assinaturas forcadas no LiveKit)
 };
 
 // Desliga com "0", "false", "off" ou "no" (qualquer caixa); qualquer outro valor —
@@ -45,5 +46,7 @@ export function getFlags(): GamifFlags {
     novaEra: f("GAMIF_NOVA_ERA"),
     // visual, NÃO gated pelo GAMIF_ALL (toggle independente): desliga com PAINTED_MAP=0
     paintedMap: ligado("PAINTED_MAP"),
+    // infra de VOZ, NÃO gated pelo GAMIF_ALL: desliga com AUDIO_AUTH=0 (volta ao fade-só-cliente)
+    audioAuth: ligado("AUDIO_AUTH"),
   };
 }
