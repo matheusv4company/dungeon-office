@@ -29,7 +29,14 @@ import { AudibilityEngine, zoneAt, CHIME_ENTER, CHIME_EXIT, type AudPoint } from
 import { LkSubscriptions, type AudioSids } from "../voice/subscriptions";
 import { issueVoiceNonce, revokeVoiceNonce } from "../voice/nonces";
 import { MeetingScribe, type MeetingSession } from "../meetings/scribe";
-import { summarizeMeeting, appendMeetingLog, readMeetingLog } from "../meetings/summarize";
+import {
+  summarizeMeeting,
+  appendMeetingLog,
+  readMeetingLog,
+  readMeetingRaw,
+  updateMeetingLogAta,
+  type Ata,
+} from "../meetings/summarize";
 
 type JoinOptions = { name?: string; charId?: number; x?: number; y?: number; authToken?: string };
 type MoveMsg = { x?: number; y?: number; dir?: number; moving?: boolean };
@@ -87,6 +94,7 @@ export class OfficeRoom extends Room<OfficeState> {
   // ---- F8: transcrição de reuniões ----
   private scribe = new MeetingScribe();
   private scribeSayAt = new Map<string, number>(); // rate limit do meeting:say por cliente
+  private scribeRetrying = false; // single-flight do atas:retry
 
   async onCreate() {
     this.setState(new OfficeState());
@@ -647,15 +655,46 @@ export class OfficeRoom extends Room<OfficeState> {
         client.send("atas:list", { atas: [] });
         return;
       }
-      const atas = readMeetingLog(50).map((m) => ({
-        startedAt: m.startedAt,
-        endedAt: m.endedAt,
-        zone: m.zone,
-        speakers: m.speakers,
-        utterances: m.utterances,
-        ata: m.ata, // null = resumo falhou naquele dia (o bruto fica só no servidor)
-      }));
-      client.send("atas:list", { atas });
+      this.sendAtasList(client);
+    });
+
+    // Retry de ata com resumo falho (ex.: fechou durante um redeploy): re-roda o
+    // resumo sobre o transcript preservado, cria as tarefas e atualiza o log.
+    this.onMessage("atas:retry", (client, msg: { startedAt?: number; zone?: number }) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || !p.memberId) return;
+      if (this.scribeRetrying) return; // 1 re-tentativa por vez na sala inteira
+      const startedAt = Number(msg?.startedAt ?? 0);
+      const zone = Number(msg?.zone ?? -1);
+      const raw = readMeetingRaw(startedAt, zone);
+      if (!raw) {
+        this.sendAtasList(client); // nada pra re-tentar (ou já foi resumida) — só atualiza
+        return;
+      }
+      this.scribeRetrying = true;
+      void (async () => {
+        try {
+          const knownMembers: string[] = [];
+          this.state.memberColors.forEach((_c, nome) => knownMembers.push(nome));
+          const knownClients: string[] = [];
+          this.state.clientColors.forEach((_c, nome) => knownClients.push(nome));
+          const ata = await summarizeMeeting(raw, knownMembers, knownClients);
+          if (ata) {
+            updateMeetingLogAta(startedAt, zone, ata);
+            if (ata.resumo && ata.tarefas.length) {
+              this.createAtaTasks(ata, startedAt);
+              this.persistBoard();
+              this.broadcast("meeting:ata", { tarefas: ata.tarefas.length });
+            }
+            console.log(`[scribe] re-tentativa OK (${ata.tarefas.length} tarefas)`);
+          } else {
+            console.warn("[scribe] re-tentativa do resumo falhou de novo");
+          }
+        } finally {
+          this.scribeRetrying = false;
+          this.sendAtasList(client); // sucesso ou falha, a UI re-renderiza o estado real
+        }
+      })();
     });
 
     // ---------- F7 (V2): emoji flutuante ----------
@@ -765,13 +804,42 @@ export class OfficeRoom extends Room<OfficeState> {
       return;
     }
     if (!ata.resumo) return; // a IA disse "não era reunião de trabalho" — sem ata mesmo
-    // datas no fuso do TIME (o servidor roda em UTC no Coolify)
-    const agora = new Date();
-    const dd = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" }).format(agora);
-    const hh = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" }).format(agora);
-    // A ATA não vira card no gestor — mora no painel "📋 Atas" (meetings.json).
-    // Só as TAREFAS entram no quadro. Responsável/cliente apenas se o nome dito bate
-    // com um REGISTRADO (normId) — a IA nunca cria nome novo no quadro.
+    this.createAtaTasks(ata, s.startedAt);
+    if (ata.tarefas.length) this.persistBoard();
+    appendMeetingLog({
+      startedAt: s.startedAt,
+      endedAt: Date.now(),
+      zone: s.zone,
+      speakers: [...s.speakers],
+      utterances: s.utterances.length,
+      ata,
+    });
+    this.broadcast("meeting:ata", { tarefas: ata.tarefas.length });
+    console.log(`[scribe] ata criada (${s.utterances.length} falas -> ${ata.tarefas.length} tarefas)`);
+  }
+
+  /** Manda a lista de atas (sem transcript bruto) pro cliente. */
+  private sendAtasList(client: Client): void {
+    const atas = readMeetingLog(50).map((m) => ({
+      startedAt: m.startedAt,
+      endedAt: m.endedAt,
+      zone: m.zone,
+      speakers: m.speakers,
+      utterances: m.utterances,
+      ata: m.ata, // null = resumo falhou (o bruto fica só no servidor; retry disponível)
+    }));
+    client.send("atas:list", { atas });
+  }
+
+  /**
+   * Materializa as tarefas 🤖 de uma ata no quadro. Responsável/cliente APENAS se o
+   * nome bate com um REGISTRADO (normId) — a IA nunca cria nome novo. `meetingStartMs`
+   * carimba a data da REUNIÃO na descrição (no retry, não é "agora").
+   */
+  private createAtaTasks(ata: Ata, meetingStartMs: number): void {
+    const quando = new Date(meetingStartMs);
+    const dd = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" }).format(quando);
+    const hh = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" }).format(quando);
     const knownM = new Map<string, string>();
     this.state.memberColors.forEach((_c, nome) => knownM.set(normId(nome), nome));
     const knownC = new Map<string, string>();
@@ -787,17 +855,6 @@ export class OfficeRoom extends Room<OfficeState> {
         cliente,
       );
     }
-    if (ata.tarefas.length) this.persistBoard();
-    appendMeetingLog({
-      startedAt: s.startedAt,
-      endedAt: Date.now(),
-      zone: s.zone,
-      speakers: [...s.speakers],
-      utterances: s.utterances.length,
-      ata,
-    });
-    this.broadcast("meeting:ata", { tarefas: ata.tarefas.length });
-    console.log(`[scribe] ata criada (${s.utterances.length} falas -> ${ata.tarefas.length} tarefas)`);
   }
 
   /**

@@ -134,8 +134,25 @@ export class AtasPanel {
       if (!m.ata) {
         const b = document.createElement("div");
         b.className = "at-body";
-        b.textContent = "⚠️ O resumo falhou nessa reunião (IA indisponível). O transcript bruto está guardado no servidor.";
+        b.textContent =
+          "⚠️ O resumo falhou nessa reunião (a IA estava indisponível — ex.: fechou durante um deploy). O transcript está preservado.";
         card.appendChild(b);
+        // recuperável: re-roda o resumo sobre o transcript guardado
+        const retry = document.createElement("button");
+        retry.className = "at-close";
+        retry.style.marginTop = "8px";
+        retry.textContent = "🔄 Gerar resumo agora";
+        retry.onclick = () => {
+          retry.disabled = true;
+          retry.textContent = "⏳ gerando… (até ~30s)";
+          try {
+            this.room.send("atas:retry", { startedAt: m.startedAt, zone: m.zone });
+          } catch {
+            retry.disabled = false;
+            retry.textContent = "🔄 Gerar resumo agora";
+          }
+        };
+        card.appendChild(retry);
       } else {
         const sr = document.createElement("div");
         sr.className = "at-sec";

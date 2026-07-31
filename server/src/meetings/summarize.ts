@@ -159,6 +159,38 @@ export function readMeetingLog(limit = 50): MeetingLogEntry[] {
   }
 }
 
+/** Transcript bruto de uma reunião com resumo falho (pra re-tentar), ou null. */
+export function readMeetingRaw(startedAt: number, zone: number): Utterance[] | null {
+  try {
+    const raw = readFileSync(FILE, "utf8");
+    const list = JSON.parse(raw) as MeetingLogEntry[];
+    const e = list.find((m) => m.startedAt === startedAt && m.zone === zone);
+    return e?.ata === null && Array.isArray(e.raw) ? e.raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Grava a ata gerada na re-tentativa (e descarta o bruto — já cumpriu o papel). */
+export function updateMeetingLogAta(startedAt: number, zone: number, ata: Ata): boolean {
+  try {
+    const raw = readFileSync(FILE, "utf8");
+    const list = JSON.parse(raw) as MeetingLogEntry[];
+    const e = list.find((m) => m.startedAt === startedAt && m.zone === zone);
+    if (!e) return false;
+    e.ata = ata;
+    delete e.raw;
+    mkdirSync(DIR, { recursive: true });
+    const tmp = `${FILE}.tmp`;
+    writeFileSync(tmp, JSON.stringify(list, null, 2), "utf8");
+    renameSync(tmp, FILE);
+    return true;
+  } catch (e) {
+    console.error("[scribe] erro ao atualizar meetings.json:", e);
+    return false;
+  }
+}
+
 /** Anexa uma ata ao log (escrita atômica; falha só loga — ata já foi pro board). */
 export function appendMeetingLog(entry: MeetingLogEntry): void {
   try {
