@@ -328,21 +328,24 @@ export class OfficeRoom extends Room<OfficeState> {
         msg: { id?: string; proof?: string; note?: string; format?: string; image?: string; imageType?: string },
       ) => {
         if (!getFlags().gate) return; // feature desligada -> no-op
+        // F4 (V2): NENHUMA rejeicao e mais silenciosa — toda falha responde o MOTIVO
+        // pro autor ("clicei e nada aconteceu" nunca mais).
+        const fail = (reason: string) => client.send("task:deliverError", { reason });
         const t = this.state.tasks.get(String(msg?.id ?? ""));
-        if (!t || t.col !== "feito") return; // so entrega o que esta em "Feito"
-        if (t.delivered) return; // ja entregue: use "Devolver" antes de reentregar (nao recarimba/forja)
+        if (!t || t.col !== "feito") return fail("A tarefa precisa estar na coluna Feito pra ser entregue.");
+        if (t.delivered) return fail("Essa tarefa já foi entregue. Use Devolver antes de reentregar.");
         // 3 formatos: "drive" (link, IA confia) | "print" (imagem, IA VE) | "none" (sem comprovacao -> Matheus aprova)
         const format = FORMATS.has(String(msg?.format)) ? String(msg.format) : "drive";
         let proof = "";
         let image: ProofImage | undefined;
         if (format === "drive") {
           proof = String(msg?.proof ?? "").trim().slice(0, 300);
-          if (!/^https?:\/\/\S+/i.test(proof)) return; // drive exige link verificavel
+          if (!/^https?:\/\/\S+/i.test(proof)) return fail("Link inválido — cole um endereço que começa com http(s)://.");
         } else if (format === "print") {
           const data = String(msg?.image ?? "");
           const mt = String(msg?.imageType ?? "");
-          if (!data || !IMG_TYPES.has(mt)) return; // print exige imagem valida
-          if (data.length > 8_000_000) return; // ~6MB em base64 — guarda de tamanho
+          if (!data || !IMG_TYPES.has(mt)) return fail("Imagem inválida — anexe um print PNG/JPG.");
+          if (data.length > 8_000_000) return fail("Imagem grande demais (máx ~6MB) — tente um print menor.");
           image = { data, mediaType: mt as ProofImage["mediaType"] };
         }
         // format === "none": sem prova nem imagem (vai pra aprovacao manual do Matheus)

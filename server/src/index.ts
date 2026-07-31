@@ -146,7 +146,13 @@ const clientDist = path.join(__dirname, "..", "..", "client", "dist");
 app.use(express.static(clientDist));
 
 const httpServer = createServer(app);
-const gameServer = new Server({ transport: new WebSocketTransport({ server: httpServer }) });
+// maxPayload: o DEFAULT do @colyseus/ws-transport é 4KB (!) — qualquer mensagem maior
+// (ex.: print de entrega em base64, ~150-300KB) era DERRUBADA no transporte sem nenhum
+// erro visível ("entregar com print não funciona"). 10MB cobre o print (guarda de 8MB
+// no handler) com folga pra mensagens futuras.
+const gameServer = new Server({
+  transport: new WebSocketTransport({ server: httpServer, maxPayload: 10 * 1024 * 1024 }),
+});
 gameServer.define("office", OfficeRoom);
 
 gameServer

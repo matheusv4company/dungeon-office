@@ -250,6 +250,7 @@ export class KanbanBoard {
   private boardEl: HTMLDivElement;
   private streamBtn!: HTMLButtonElement;
   private modalBg: HTMLDivElement;
+  private deliverPaste?: (e: ClipboardEvent) => void; // F4: Ctrl+V de print no modal de entrega
   private opened = false;
   private openedByStream = false;
   private streamDismissed = false; // usuario fechou um board aberto por stream
@@ -1202,14 +1203,12 @@ export class KanbanBoard {
     preview.style.cssText = "max-width:100%;max-height:180px;border-radius:8px;margin-top:6px;display:none;";
     const imgStatus = document.createElement("div");
     imgStatus.style.cssText = "font-size:12px;color:#6b7280;margin-top:4px;";
-    fileInput.onchange = async () => {
-      const file = fileInput.files?.[0];
-      if (!file) return;
+    const useFile = async (file: File) => {
       imgStatus.textContent = "processando imagem…";
       const r = await this.compressImage(file);
       imageData = r;
       if (!r) {
-        imgStatus.textContent = "não consegui ler essa imagem — tente outra.";
+        imgStatus.textContent = "não consegui ler essa imagem — tente outra (PNG/JPG).";
         preview.style.display = "none";
         return;
       }
@@ -1217,6 +1216,22 @@ export class KanbanBoard {
       preview.style.display = "block";
       imgStatus.textContent = "imagem pronta ✔ — a IA vai ler o print";
     };
+    fileInput.onchange = () => {
+      const file = fileInput.files?.[0];
+      if (file) void useFile(file);
+    };
+    // F4: colar print direto com Ctrl+V (sem salvar arquivo). Só age quando a aba Print
+    // está ativa E o clipboard tem imagem — colar TEXTO na nota continua normal.
+    this.deliverPaste = (e: ClipboardEvent) => {
+      if (format !== "print") return;
+      const item = Array.from(e.clipboardData?.items ?? []).find((i) => i.type.startsWith("image/"));
+      const file = item?.getAsFile();
+      if (!file) return;
+      e.preventDefault();
+      void useFile(file);
+    };
+    document.addEventListener("paste", this.deliverPaste);
+    imgStatus.textContent = "dica: dá pra colar o print direto aqui (Ctrl+V)";
     const printField = document.createElement("div");
     printField.className = "kb-field";
     const pl = document.createElement("label");
@@ -1391,6 +1406,11 @@ export class KanbanBoard {
   private closeModal() {
     this.modalBg.classList.remove("open");
     this.modalBg.innerHTML = "";
+    // F4: remove o listener de colar print (se o modal de entrega estava aberto)
+    if (this.deliverPaste) {
+      document.removeEventListener("paste", this.deliverPaste);
+      this.deliverPaste = undefined;
+    }
   }
 
   destroy() {

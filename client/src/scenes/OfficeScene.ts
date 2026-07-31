@@ -650,6 +650,11 @@ export class OfficeScene extends Phaser.Scene {
         this.showAiFeedback(String(m?.status ?? ""), Number(m?.score ?? -1), String(m?.note ?? ""));
       },
     );
+    // F4 (V2): entrega REJEITADA pelo servidor — mostra o motivo (fim do "cliquei e nada").
+    room.onMessage("task:deliverError", (m: { reason?: string }) => {
+      if (this.room !== room) return;
+      this.showToast("⚠️ Entrega não registrada: " + String(m?.reason ?? "erro desconhecido"), "#7a2a2a", 5200);
+    });
     // F2 (V2): aviso sonoro de proximidade — o SERVIDOR decide quando alguém entrou/saiu
     // do alcance da voz (mesmos eventos que controlam as assinaturas de áudio da F1, então
     // o som NUNCA diverge do que você realmente ouve). Cooldown por pessoa contra flap.
