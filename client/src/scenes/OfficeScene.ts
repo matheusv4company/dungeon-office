@@ -38,6 +38,8 @@ const FLAME_ORANGE: Flame = { glow: 0xff8a2e, tints: [0xfff3a0, 0xffb24d, 0xff6a
 const FLAME_GREEN: Flame = { glow: 0x47ff9e, tints: [0xb6ffd8, 0x57ffb0, 0x23e57a] };
 
 // voz: raios de proximidade (px) — queda quadratica (cai rapido com a distancia)
+// F7 (V2): emojis disponíveis na barra (ESPELHA a whitelist EMOTES do OfficeRoom.ts)
+const EMOTE_LIST = ["👍", "❤️", "😂", "🎉", "👏", "😮", "🔥", "✅"];
 const VOICE_FULL = 40; // dentro disso: volume cheio (~1 tile)
 const VOICE_MAX = 160; // alem disso: silencio (~5 tiles)
 const VOICE_STALE_MS = 1500; // sem update de posicao ha mais que isso: nao confio (mudo)
@@ -121,6 +123,7 @@ export class OfficeScene extends Phaser.Scene {
   private remoteBodies?: Phaser.Physics.Arcade.Group; // corpos de colisão dos remotos (personagem↔personagem)
   private proxChimeAt = new Map<string, number>(); // F2: último aviso sonoro por pessoa (cooldown)
   private shareAudioHintShown = false; // F3: dica de share com som (1x por sessão)
+  private emoteBar?: HTMLDivElement; // F7: barra de emojis (DOM)
   private lastSent = 0;
   private lastDir = 0;
 
@@ -271,6 +274,8 @@ export class OfficeScene extends Phaser.Scene {
     this.kanban?.destroy();
     this.kanban = undefined;
     this.gestorBtn = undefined;
+    this.emoteBar?.remove();
+    this.emoteBar = undefined;
     this.vault?.destroy();
     this.vault = undefined;
     this.vaultBtn = undefined;
@@ -597,6 +602,12 @@ export class OfficeScene extends Phaser.Scene {
     }
     this.setupKanban(room);
     this.setupVault(room);
+    this.setupEmoteBar();
+    // F7 (V2): emoji flutuante em cima do autor (o servidor valida whitelist + rate limit)
+    room.onMessage("emote", (m: { sid?: string; e?: string }) => {
+      if (this.room !== room) return;
+      this.showEmote(String(m?.sid ?? ""), String(m?.e ?? ""));
+    });
     const $ = getStateCallbacks(room) as (obj: unknown) => any;
     $(room.state).players.onAdd((player: any, sid: string) => {
       if (sid !== room.sessionId) this.addRemote(sid, player);
@@ -3011,6 +3022,49 @@ export class OfficeScene extends Phaser.Scene {
    * congela), entao da pra atenuar quem se afasta (sem vazar) e manter quem esta
    * perto audivel — sem precisar mutar tudo.
    */
+  /** F7 (V2): barra fixa de emojis (DOM, bottom-center). Singleton; só com o flag on. */
+  private setupEmoteBar(): void {
+    if (this.emoteBar || !getFlags().emotes) return;
+    const bar = document.createElement("div");
+    bar.style.cssText =
+      "position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:9000;" +
+      "display:flex;gap:2px;background:#15131dcc;border:1px solid #3a3550;border-radius:22px;" +
+      "padding:5px 9px;";
+    for (const e of EMOTE_LIST) {
+      const b = document.createElement("button");
+      b.textContent = e;
+      b.title = "Reagir";
+      b.style.cssText =
+        "font-size:20px;background:none;border:none;cursor:pointer;padding:2px 5px;line-height:1;";
+      b.onclick = () => this.room?.send("emote", { e });
+      bar.appendChild(b);
+    }
+    document.body.appendChild(bar);
+    this.emoteBar = bar;
+  }
+
+  /** F7 (V2): renderiza o emoji flutuando em cima do personagem do autor. */
+  private showEmote(sid: string, e: string): void {
+    if (!e) return;
+    const sprite = sid === this.sessionId ? this.player : this.remotes.get(sid)?.sprite;
+    if (!sprite || !sprite.visible) return; // autor em outro andar -> não mostra
+    const t = this.add
+      .text(sprite.x, sprite.y - 64, e, { fontSize: "26px" })
+      .setOrigin(0.5)
+      .setDepth(UI_DEPTH - 1)
+      .setScale(0.5);
+    this.uiCam?.ignore(t);
+    this.tweens.add({
+      targets: t,
+      y: sprite.y - 112,
+      scale: 1.15,
+      alpha: { from: 1, to: 0 },
+      duration: 2000,
+      ease: "Cubic.easeOut",
+      onComplete: () => t.destroy(),
+    });
+  }
+
   /** F2: aviso sonoro "alguém chegou/saiu do alcance da voz", com cooldown por pessoa. */
   private proxChime(sid: string, entered: boolean): void {
     if (!sid || sid === this.sessionId) return;

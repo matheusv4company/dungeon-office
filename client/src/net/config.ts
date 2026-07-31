@@ -18,6 +18,7 @@ export type GamifFlags = {
   audioAuth: boolean; // F1 V2 — audibilidade server-side (assinaturas forcadas no LiveKit)
   proxSound: boolean; // F2 V2 — aviso sonoro de entrada/saida do alcance de voz
   shareAudio: boolean; // F3 V2 — compartilhamento de tela com AUDIO (aba/sistema)
+  emotes: boolean; // F7 V2 — emoji flutuante em cima do personagem
 };
 
 // Default: tudo LIGADO (mesmo default do servidor). Se o /config falhar no boot, o jogo
@@ -37,6 +38,7 @@ const TODOS_ON: GamifFlags = {
   audioAuth: true,
   proxSound: true,
   shareAudio: true,
+  emotes: true,
 };
 
 let flags: GamifFlags = { ...TODOS_ON };

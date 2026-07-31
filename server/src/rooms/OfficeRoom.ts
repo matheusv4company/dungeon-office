@@ -39,6 +39,7 @@ const MAP_H = 1824;
 const COLS = new Set(["backlog", "afazer", "fazendo", "travado", "feito"]);
 const UNITS = new Set(["", "ia", "mkt"]); // empresa dona da tarefa
 const FORMATS = new Set(["drive", "print", "none"]); // formato da entrega
+const EMOTES = new Set(["👍", "❤️", "😂", "🎉", "👏", "😮", "🔥", "✅"]); // F7 V2: whitelist de emoji
 const IMG_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]); // print aceito pela visao
 const SIZES = new Set(["", "PP", "P", "M", "G", "GG"]); // F6 — tamanho (T-shirt)
 const WEIGHTS = new Set([70, 100, 150]); // F6 — peso do cliente (×0.7/1.0/1.5)
@@ -71,6 +72,7 @@ export class OfficeRoom extends Room<OfficeState> {
   private lkSubs = new LkSubscriptions();
   private lkSids = new Map<string, AudioSids>(); // identity(sessionId) -> sids de áudio no LiveKit
   private appliedSubs = new Map<string, boolean>(); // "listener>speaker" -> último estado APLICADO
+  private emoteAt = new Map<string, number>(); // F7: último emote por cliente (rate limit)
 
   async onCreate() {
     this.setState(new OfficeState());
@@ -593,6 +595,18 @@ export class OfficeRoom extends Room<OfficeState> {
       client.send("vault:imported", { count: parsed.length });
     });
 
+    // ---------- F7 (V2): emoji flutuante ----------
+    // Whitelist + rate limit por cliente; broadcast pra todos renderizarem em cima do autor.
+    this.onMessage("emote", (client, msg: { e?: string }) => {
+      if (!getFlags().emotes) return;
+      const e = String(msg?.e ?? "");
+      if (!EMOTES.has(e)) return;
+      const now = Date.now();
+      if (now - (this.emoteAt.get(client.sessionId) ?? 0) < 750) return; // anti-spam
+      this.emoteAt.set(client.sessionId, now);
+      this.broadcast("emote", { sid: client.sessionId, e });
+    });
+
     // ---------- F1: motor de audibilidade (fix definitivo do vazamento de voz) ----------
     // O servidor (dono das posições) decide quem RECEBE áudio de quem e força as
     // assinaturas no LiveKit. AUDIO_AUTH=0 desliga (volta ao fade-só-cliente).
@@ -1035,6 +1049,7 @@ export class OfficeRoom extends Room<OfficeState> {
     for (const key of [...this.appliedSubs.keys()]) {
       if (key.startsWith(`${sid}>`) || key.endsWith(`>${sid}`)) this.appliedSubs.delete(key);
     }
+    this.emoteAt.delete(sid);
     console.log(`[OfficeRoom] saiu: ${sid}`);
   }
 

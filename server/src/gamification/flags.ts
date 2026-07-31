@@ -19,6 +19,7 @@ export type GamifFlags = {
   audioAuth: boolean; // F1 V2 — audibilidade server-side (assinaturas forcadas no LiveKit)
   proxSound: boolean; // F2 V2 — aviso sonoro de entrada/saida do alcance de voz
   shareAudio: boolean; // F3 V2 — compartilhamento de tela com AUDIO (aba/sistema)
+  emotes: boolean; // F7 V2 — emoji flutuante em cima do personagem
 };
 
 // Desliga com "0", "false", "off" ou "no" (qualquer caixa); qualquer outro valor —
@@ -52,5 +53,6 @@ export function getFlags(): GamifFlags {
     audioAuth: ligado("AUDIO_AUTH"),
     proxSound: ligado("PROX_SOUND"),
     shareAudio: ligado("SHARE_AUDIO"),
+    emotes: ligado("EMOTES"),
   };
 }
