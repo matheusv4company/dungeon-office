@@ -28,7 +28,7 @@ import {
 import { AudibilityEngine, zoneAt, CHIME_ENTER, CHIME_EXIT, type AudPoint } from "../voice/audibility";
 import { LkSubscriptions, type AudioSids } from "../voice/subscriptions";
 import { issueVoiceNonce, revokeVoiceNonce } from "../voice/nonces";
-import { MeetingScribe, type MeetingSession } from "../meetings/scribe";
+import { MeetingScribe, type MeetingSession, type Utterance } from "../meetings/scribe";
 import {
   summarizeMeeting,
   appendMeetingLog,
@@ -95,6 +95,9 @@ export class OfficeRoom extends Room<OfficeState> {
   private scribe = new MeetingScribe();
   private scribeSayAt = new Map<string, number>(); // rate limit do meeting:say por cliente
   private scribeRetrying = false; // single-flight do atas:retry
+  private scribeRetryWaiters = new Set<Client>(); // quem pediu retry e espera a lista
+  private disposed = false; // sala descartada: continuações async não podem mais mutar estado
+  private scribeRecSig = ""; // última assinatura das zonas gravando (broadcast só na mudança)
 
   async onCreate() {
     this.setState(new OfficeState());
@@ -645,6 +648,11 @@ export class OfficeRoom extends Room<OfficeState> {
         this.scribe.say(zone, p.name || p.memberId, text, now);
       });
       this.clock.setInterval(() => this.scribeTick(), 1000);
+      // Recuperação AUTOMÁTICA: o caso comum de ata falha é a sessão fechar durante um
+      // redeploy (a IA cai junto com a rede do container). Na volta, a IA está de pé —
+      // então varremos as pendências e resumimos sozinhos. O botão manual continua
+      // existindo como rede (IA fora por mais tempo, falha de escrita etc).
+      this.clock.setTimeout(() => void this.retryPendingAtas(), 20_000);
     }
 
     // Painel "📋 Atas": lista as atas gravadas (só membro logado; transcript BRUTO
@@ -663,7 +671,13 @@ export class OfficeRoom extends Room<OfficeState> {
     this.onMessage("atas:retry", (client, msg: { startedAt?: number; zone?: number }) => {
       const p = this.state.players.get(client.sessionId);
       if (!p || !p.memberId) return;
-      if (this.scribeRetrying) return; // 1 re-tentativa por vez na sala inteira
+      // concorrência: NUNCA descartar em silêncio — o cliente já desabilitou o botão
+      // esperando resposta. Entra na fila de espera e recebe a lista quando terminar.
+      if (this.scribeRetrying) {
+        this.scribeRetryWaiters.add(client);
+        client.send("atas:busy", { reason: "já há um resumo sendo gerado — aguarde alguns segundos" });
+        return;
+      }
       const startedAt = Number(msg?.startedAt ?? 0);
       const zone = Number(msg?.zone ?? -1);
       const raw = readMeetingRaw(startedAt, zone);
@@ -672,27 +686,21 @@ export class OfficeRoom extends Room<OfficeState> {
         return;
       }
       this.scribeRetrying = true;
+      this.scribeRetryWaiters.add(client);
       void (async () => {
         try {
-          const knownMembers: string[] = [];
-          this.state.memberColors.forEach((_c, nome) => knownMembers.push(nome));
-          const knownClients: string[] = [];
-          this.state.clientColors.forEach((_c, nome) => knownClients.push(nome));
-          const ata = await summarizeMeeting(raw, knownMembers, knownClients);
-          if (ata) {
-            updateMeetingLogAta(startedAt, zone, ata);
-            if (ata.resumo && ata.tarefas.length) {
-              this.createAtaTasks(ata, startedAt);
-              this.persistBoard();
-              this.broadcast("meeting:ata", { tarefas: ata.tarefas.length });
-            }
-            console.log(`[scribe] re-tentativa OK (${ata.tarefas.length} tarefas)`);
-          } else {
-            console.warn("[scribe] re-tentativa do resumo falhou de novo");
-          }
+          await this.runAtaRetry(raw, startedAt, zone);
         } finally {
           this.scribeRetrying = false;
-          this.sendAtasList(client); // sucesso ou falha, a UI re-renderiza o estado real
+          // sucesso ou falha, TODO mundo que pediu re-renderiza o estado real
+          for (const c of this.scribeRetryWaiters) {
+            try {
+              this.sendAtasList(c);
+            } catch {
+              /* cliente saiu no meio */
+            }
+          }
+          this.scribeRetryWaiters.clear();
         }
       })();
     });
@@ -776,6 +784,16 @@ export class OfficeRoom extends Room<OfficeState> {
       if (z >= 0) counts.set(z, (counts.get(z) ?? 0) + 1);
     });
     for (const s of this.scribe.tick(counts, Date.now())) void this.finishMeeting(s);
+    // Estado REAL da gravação -> cliente. Sem isso o badge dizia "🔴 transcrevendo"
+    // mesmo com 1 membro sozinho (ou só com convidados), quando a sessão nem existe
+    // e TODA fala era descartada — a ata nunca sairia e ninguém saberia.
+    const rec: number[] = [];
+    for (let z = 0; z < 3; z++) if (this.scribe.isOpen(z)) rec.push(z);
+    const sig = rec.join(",");
+    if (sig !== this.scribeRecSig) {
+      this.scribeRecSig = sig;
+      this.broadcast("meeting:rec", { zones: rec });
+    }
   }
 
   /** Fecha a reunião: resume via Haiku, cria card-ata + tarefas 🤖 e avisa o time. */
@@ -816,6 +834,73 @@ export class OfficeRoom extends Room<OfficeState> {
     });
     this.broadcast("meeting:ata", { tarefas: ata.tarefas.length });
     console.log(`[scribe] ata criada (${s.utterances.length} falas -> ${ata.tarefas.length} tarefas)`);
+  }
+
+  /**
+   * Varre o log por atas com resumo pendente e re-tenta (uma de cada vez, as mais
+   * recentes primeiro, no máx. 3 por boot). Roda ~20s depois do boot pra não competir
+   * com a subida. Silencioso: se a IA ainda estiver fora, o botão manual segue lá.
+   */
+  private async retryPendingAtas(): Promise<void> {
+    if (this.disposed || !getFlags().meetingScribe) return;
+    const pend = readMeetingLog(50)
+      .filter((m) => m.ata === null && Array.isArray(m.raw) && m.raw.length > 0)
+      .slice(0, 3);
+    if (!pend.length) return;
+    console.log(`[scribe] ${pend.length} ata(s) pendente(s) — re-tentando automaticamente`);
+    for (const m of pend) {
+      if (this.disposed) return;
+      if (this.scribeRetrying) return; // alguém clicou no botão no meio: deixa pra ele
+      const raw = readMeetingRaw(m.startedAt, m.zone);
+      if (!raw) continue; // já resumida por outro caminho
+      this.scribeRetrying = true;
+      try {
+        await this.runAtaRetry(raw, m.startedAt, m.zone);
+      } finally {
+        this.scribeRetrying = false;
+      }
+    }
+  }
+
+  /**
+   * Re-tentativa do resumo de uma ata falha. Regras (todas vindas do code review):
+   * - resumo VAZIO ("não era reunião de trabalho") NÃO grava nada: preserva
+   *   ata:null + transcript bruto (senão o retry destruía o dado que ele existe pra salvar);
+   * - a gravação do log é o PONTO DE COMMIT: tarefas só nascem se o log foi gravado
+   *   (senão um segundo clique duplicaria as tarefas 🤖 no quadro);
+   * - sala descartada durante o await (F5 do último membro / redeploy): aborta ANTES
+   *   de gravar — o estado morto não pode sobrescrever o board de uma sala nova, e o
+   *   raw continua lá pra re-tentar depois.
+   */
+  private async runAtaRetry(raw: Utterance[], startedAt: number, zone: number): Promise<void> {
+    const knownMembers: string[] = [];
+    this.state.memberColors.forEach((_c, nome) => knownMembers.push(nome));
+    const knownClients: string[] = [];
+    this.state.clientColors.forEach((_c, nome) => knownClients.push(nome));
+    const ata = await summarizeMeeting(raw, knownMembers, knownClients);
+    if (this.disposed) {
+      console.warn("[scribe] retry abandonado — sala descartada durante o resumo (transcript preservado)");
+      return;
+    }
+    if (!ata) {
+      console.warn("[scribe] re-tentativa do resumo falhou de novo (transcript preservado)");
+      return;
+    }
+    if (!ata.resumo) {
+      // mesma semântica do finishMeeting: sem resumo, nada é gravado
+      console.warn("[scribe] re-tentativa: IA classificou como 'não foi reunião de trabalho' — nada gravado");
+      return;
+    }
+    if (!updateMeetingLogAta(startedAt, zone, ata)) {
+      console.error("[scribe] resumo OK mas gravação do log falhou — tarefas NÃO criadas (retry segue disponível)");
+      return;
+    }
+    if (ata.tarefas.length) {
+      this.createAtaTasks(ata, startedAt);
+      this.persistBoard();
+      this.broadcast("meeting:ata", { tarefas: ata.tarefas.length });
+    }
+    console.log(`[scribe] re-tentativa OK (${ata.tarefas.length} tarefas)`);
   }
 
   /** Manda a lista de atas (sem transcript bruto) pro cliente. */
@@ -1395,6 +1480,7 @@ export class OfficeRoom extends Room<OfficeState> {
   }
 
   async onDispose() {
+    this.disposed = true; // continuações async em voo param de mutar estado/disco
     // F8: a sala Colyseus tem autoDispose — quando TODOS desconectam no fim da reunião,
     // o clock morre antes do grace de 60s e as sessões abertas sumiriam com o transcript.
     // Drena e fecha cada uma AQUI (o Colyseus aguarda a promise do onDispose, inclusive

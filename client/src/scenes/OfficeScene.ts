@@ -138,6 +138,7 @@ export class OfficeScene extends Phaser.Scene {
   private scribePaused = false; // pausa PESSOAL da transcrição (botão no badge)
   private scribeBadge?: HTMLDivElement;
   private lastScribeEval = 0; // throttle da elegibilidade (~600ms)
+  private scribeRecZones = new Set<number>(); // zonas com sessão ABERTA no servidor (verdade real)
   private scribeOutbox = ""; // falas aguardando envio (espaçado — anti-flood do servidor)
   private scribeSentAt = 0;
   private scribeFlushT?: number;
@@ -708,6 +709,13 @@ export class OfficeScene extends Phaser.Scene {
         this.showAiFeedback(String(m?.status ?? ""), Number(m?.score ?? -1), String(m?.note ?? ""));
       },
     );
+    // F8 (V2): quais salas estão REALMENTE gravando (sessão aberta no servidor) — o
+    // badge só pode dizer "🔴 transcrevendo" quando a sessão existe de verdade.
+    room.onMessage("meeting:rec", (m: { zones?: number[] }) => {
+      if (this.room !== room) return;
+      this.scribeRecZones = new Set(Array.isArray(m?.zones) ? m.zones : []);
+      this.lastScribeEval = 0; // re-avalia o badge já
+    });
     // F8 (V2): a ata da reunião ficou pronta (tarefas 🤖 já estão no gestor)
     room.onMessage("meeting:ata", (m: { tarefas?: number }) => {
       if (this.room !== room) return;
@@ -819,7 +827,7 @@ export class OfficeScene extends Phaser.Scene {
         // canto do botão de voz; religar no meio do clique deixa o Phaser processar esse clique no
         // botão de mute embaixo (te mutando ao fechar). O guard evita religar se reabriu no meio.
         this.time.delayedCall(150, () => {
-          if (!this.kanban?.isOpen()) this.input.enabled = true;
+          if (!this.anyOverlayOpen()) this.input.enabled = true;
         });
       }
     };
@@ -861,11 +869,21 @@ export class OfficeScene extends Phaser.Scene {
         this.input.enabled = false;
       } else {
         this.time.delayedCall(150, () => {
-          if (!this.vault?.isOpen()) this.input.enabled = true;
+          if (!this.anyOverlayOpen()) this.input.enabled = true;
         });
       }
     };
     if (wasOpen) this.vault.open();
+  }
+
+  /**
+   * Algum overlay DOM está aberto? (kanban / cofre / atas). Usado tanto pelo gate de
+   * teclado do update() quanto pelos guards de religar o ponteiro: checar só o próprio
+   * painel religava o input com OUTRO overlay ainda aberto — clique vazava pro canvas
+   * (o bug histórico de "fechei o gestor e me mutei").
+   */
+  private anyOverlayOpen(): boolean {
+    return (this.kanban?.isOpen() ?? false) || (this.vault?.isOpen() ?? false) || (this.atas?.isOpen() ?? false);
   }
 
   /** Painel "📋 Atas" — mesmo cuidado de input do vault/kanban. */
@@ -879,7 +897,7 @@ export class OfficeScene extends Phaser.Scene {
         this.input.enabled = false;
       } else {
         this.time.delayedCall(150, () => {
-          if (!this.atas?.isOpen()) this.input.enabled = true;
+          if (!this.anyOverlayOpen()) this.input.enabled = true;
         });
       }
     };
@@ -3180,12 +3198,16 @@ export class OfficeScene extends Phaser.Scene {
     const inZone = myZone >= 0;
     const isMember = !!loadMember()?.memberId;
     const micOn = this.voice.connected && this.voice.micEnabled;
+    // sessão ABERTA no servidor (≥2 membros na sala) — sem ela toda fala é descartada
+    const recording = inZone && this.scribeRecZones.has(myZone);
     const eligible = inZone && isMember && micOn && !this.scribePaused && this.scribe.supported();
-    this.scribe.setActive(eligible);
+    // só captura quando existe sessão de verdade (não gasta reconhecimento à toa)
+    this.scribe.setActive(eligible && recording);
     if (!inZone || !isMember) this.updateScribeBadge("hidden");
     else if (!this.scribe.supported()) this.updateScribeBadge("unsupported");
     else if (this.scribePaused) this.updateScribeBadge("paused");
     else if (!micOn) this.updateScribeBadge("nomic");
+    else if (!recording) this.updateScribeBadge("waiting"); // sozinho / só com convidado
     else this.updateScribeBadge("on");
   }
 
@@ -3208,7 +3230,7 @@ export class OfficeScene extends Phaser.Scene {
     }, wait);
   }
 
-  private updateScribeBadge(state: "hidden" | "on" | "paused" | "nomic" | "unsupported"): void {
+  private updateScribeBadge(state: "hidden" | "on" | "waiting" | "paused" | "nomic" | "unsupported"): void {
     if (state === "hidden") {
       this.scribeBadge?.remove();
       this.scribeBadge = undefined;
@@ -3230,11 +3252,13 @@ export class OfficeScene extends Phaser.Scene {
     const txt =
       state === "on"
         ? "🔴 transcrevendo a reunião — clique pra pausar a sua parte"
-        : state === "paused"
-          ? "⏸️ sua transcrição está pausada — clique pra retomar"
-          : state === "nomic"
-            ? "📋 reunião com ata automática — ative a voz pra entrar na ata"
-            : "📋 ata automática: use Chrome/Edge pra sua fala ser transcrita";
+        : state === "waiting"
+          ? "📋 ata automática: aguardando mais um membro logado entrar na sala"
+          : state === "paused"
+            ? "⏸️ sua transcrição está pausada — clique pra retomar"
+            : state === "nomic"
+              ? "📋 reunião com ata automática — ative a voz pra entrar na ata"
+              : "📋 ata automática: use Chrome/Edge pra sua fala ser transcrita";
     if (this.scribeBadge.textContent !== txt) this.scribeBadge.textContent = txt;
   }
 
@@ -3344,7 +3368,7 @@ export class OfficeScene extends Phaser.Scene {
 
     // com o gestor de tarefas OU a central de senhas aberta, o teclado e do overlay DOM
     // (nao move o boneco; libera digitar nos inputs)
-    const uiOpen = (this.kanban?.isOpen() ?? false) || (this.vault?.isOpen() ?? false) || (this.atas?.isOpen() ?? false);
+    const uiOpen = this.anyOverlayOpen();
     const jx = uiOpen ? 0 : this.joyVec.x;
     const jy = uiOpen ? 0 : this.joyVec.y;
     const J = 0.28; // zona morta do joystick
