@@ -50,25 +50,9 @@ const UNIT_META: Record<string, { label: string; color: string }> = {
   ia: { label: "IA", color: "#14b8a6" },
   mkt: { label: "Marketing", color: "#f59e0b" },
 };
-const UNIT_OPTS: { value: string; label: string }[] = [
-  { value: "", label: "— nenhuma —" },
-  { value: "ia", label: "IA" },
-  { value: "mkt", label: "Marketing" },
-];
-// F6 — tamanho (esforço) e peso do cliente, que pesam os Pontos de Entrega
-const SIZE_OPTS: { value: string; label: string }[] = [
-  { value: "", label: "— tamanho — (assume M)" },
-  { value: "PP", label: "PP — mínimo" },
-  { value: "P", label: "P — pequeno" },
-  { value: "M", label: "M — médio" },
-  { value: "G", label: "G — grande" },
-  { value: "GG", label: "GG — enorme" },
-];
-const WEIGHT_OPTS: { value: number; label: string }[] = [
-  { value: 70, label: "Interno / baixa criticidade (×0.7)" },
-  { value: 100, label: "Normal (×1.0)" },
-  { value: 150, label: "Estratégico / crítico (×1.5)" },
-];
+// UNIT_OPTS / SIZE_OPTS / WEIGHT_OPTS removidos junto com os campos "Empresa",
+// "Tamanho" e "Peso do cliente" do editor (o time não usava). UNIT_META fica: ainda
+// pinta o selo IA/Marketing das tarefas ANTIGAS que já tinham empresa definida.
 
 // paleta fixa de cores p/ chips automaticos (consistente por nome)
 const PALETTE = [
@@ -1071,23 +1055,10 @@ export class KanbanBoard {
     mk("Responsável", assignee.el);
     const client = this.buildManagedChips("client", task?.client ?? "", editing);
     mk("Cliente", client.el);
-    const unitSel = document.createElement("select");
-    for (const o of UNIT_OPTS) unitSel.appendChild(new Option(o.label, o.value));
-    unitSel.value = task?.unit ?? "";
-    mk("Empresa (IA / Marketing)", unitSel);
-    // F6 — tamanho + peso do cliente (pesam os PE). Só com o flag de progressão on.
-    let sizeSel: HTMLSelectElement | undefined;
-    let weightSel: HTMLSelectElement | undefined;
-    if (getFlags().progression) {
-      sizeSel = document.createElement("select");
-      for (const o of SIZE_OPTS) sizeSel.appendChild(new Option(o.label, o.value));
-      sizeSel.value = task?.size ?? "";
-      mk("Tamanho (esforço)", sizeSel);
-      weightSel = document.createElement("select");
-      for (const o of WEIGHT_OPTS) weightSel.appendChild(new Option(o.label, String(o.value)));
-      weightSel.value = String(task?.clientWeight ?? 100);
-      mk("Peso do cliente", weightSel);
-    }
+    // "Empresa", "Tamanho" e "Peso do cliente" saíram do editor (o time não usava).
+    // Os DADOS continuam no schema: tarefas antigas preservam o que já tinham (e o
+    // task:update só sobrescreve campo que é enviado). Efeito na pontuação: tarefa
+    // nova conta como tamanho M / peso 100 — os defaults do computePE.
     const due = document.createElement("input");
     due.type = "date";
     due.value = task?.due ?? "";
@@ -1139,17 +1110,16 @@ export class KanbanBoard {
     save.textContent = "Salvar";
     save.onclick = () => {
       const col = colSel.value;
+      // sem unit/size/clientWeight: o task:update só toca no campo que RECEBE, então
+      // editar uma tarefa antiga preserva os valores que ela já tinha
       const payload: Record<string, unknown> = {
         title: title.value.trim(),
         desc: desc.value,
         assignee: assignee.value.trim(),
         client: client.value.trim(),
-        unit: unitSel.value,
         due: due.value,
         col,
       };
-      if (sizeSel) payload.size = sizeSel.value;
-      if (weightSel) payload.clientWeight = Number(weightSel.value);
       if (editing && task) {
         this.room.send("task:update", { id: task.id, ...payload });
         this.maybePromptBlock(task.id, col, task.col); // F4: motivo se foi pra Travado
