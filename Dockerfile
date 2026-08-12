@@ -12,15 +12,20 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Dependencias primeiro (melhor cache de camadas)
-COPY package.json ./
+# Dependencias primeiro (melhor cache de camadas). O LOCKFILE vai junto: sem ele o
+# `npm install` resolvia versoes NOVAS do registry a cada build — o mesmo commit que
+# subiu ontem podia quebrar hoje porque alguma dependencia publicou versao nova
+# (build nao reproduzivel). Com o lock, o build usa exatamente o que foi testado.
+COPY package.json package-lock.json ./
 COPY client/package.json ./client/
 COPY server/package.json ./server/
 # --include=dev garante vite/typescript mesmo com NODE_ENV=production.
 # NAO usar --omit=optional: o vite 8 (rolldown) precisa do binding nativo por
 # plataforma, que e dependencia OPCIONAL. O sharp (tambem opcional) instala
 # aqui normalmente — ou e ignorado se falhar, sem quebrar o build.
-RUN npm install --include=dev
+# `npm ci` instala exatamente o lock; se ele falhar por algo de ambiente, cai no
+# `npm install` (comportamento antigo) pra nao deixar o deploy travado.
+RUN npm ci --include=dev || npm install --include=dev
 
 # Codigo + build (cliente -> client/dist ; servidor -> server/dist)
 COPY . .
